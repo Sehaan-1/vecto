@@ -53,39 +53,32 @@ func (g *Graph) Tasks() []string {
 }
 
 // TopologicalSort returns a 100% deterministic linear order of tasks where all dependencies precede dependents.
+// It uses an in-place typed min-heap to guarantee lexicographical tie-breaking in O((V + E) log V) with zero interface boxing.
 // If a cycle exists, it returns an error with the exact cycle path.
 func (g *Graph) TopologicalSort() ([]string, error) {
-	indegree := make(map[string]int)
+	indegree := make(map[string]int, len(g.dependencies))
 	for task := range g.dependencies {
 		indegree[task] = len(g.dependencies[task])
 	}
 
-	queue := make([]string, 0)
+	pq := make([]string, 0, len(g.dependencies))
 	for task, deg := range indegree {
 		if deg == 0 {
-			queue = append(queue, task)
+			heapPushString(&pq, task)
 		}
 	}
-	sort.Strings(queue)
 
 	result := make([]string, 0, len(g.dependencies))
-	for len(queue) > 0 {
-		curr := queue[0]
-		queue = queue[1:]
+	for len(pq) > 0 {
+		curr := heapPopString(&pq)
 		result = append(result, curr)
 
-		// Sort dependents deterministically before visiting
-		deps := make([]string, len(g.dependents[curr]))
-		copy(deps, g.dependents[curr])
-		sort.Strings(deps)
-
-		for _, dependent := range deps {
+		for _, dependent := range g.dependents[curr] {
 			indegree[dependent]--
 			if indegree[dependent] == 0 {
-				queue = append(queue, dependent)
+				heapPushString(&pq, dependent)
 			}
 		}
-		sort.Strings(queue)
 	}
 
 	if len(result) != len(g.dependencies) {
@@ -94,6 +87,45 @@ func (g *Graph) TopologicalSort() ([]string, error) {
 	}
 
 	return result, nil
+}
+
+func heapPushString(h *[]string, x string) {
+	*h = append(*h, x)
+	j := len(*h) - 1
+	for {
+		i := (j - 1) / 2
+		if i == j || !((*h)[j] < (*h)[i]) {
+			break
+		}
+		(*h)[i], (*h)[j] = (*h)[j], (*h)[i]
+		j = i
+	}
+}
+
+func heapPopString(h *[]string) string {
+	a := *h
+	n := len(a) - 1
+	a[0], a[n] = a[n], a[0]
+	// sift down
+	i := 0
+	for {
+		j1 := 2*i + 1
+		if j1 >= n || j1 < 0 {
+			break
+		}
+		j := j1
+		if j2 := j1 + 1; j2 < n && a[j2] < a[j1] {
+			j = j2
+		}
+		if !(a[j] < a[i]) {
+			break
+		}
+		a[i], a[j] = a[j], a[i]
+		i = j
+	}
+	x := a[n]
+	*h = a[0:n]
+	return x
 }
 
 // ExecutionLayers groups tasks into parallel tiers where each layer can be executed concurrently.

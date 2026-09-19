@@ -127,11 +127,16 @@ func resolveInputFiles(baseDir string, globs []string) ([]string, error) {
 					if err != nil {
 						return err
 					}
-					if !info.IsDir() {
-						rel, err := filepath.Rel(baseDir, path)
-						if err == nil {
-							fileSet[filepath.ToSlash(rel)] = true
+					if info.IsDir() {
+						baseName := filepath.Base(path)
+						if baseName == ".git" || baseName == ".vecto" || baseName == "bin" {
+							return filepath.SkipDir
 						}
+						return nil
+					}
+					rel, err := filepath.Rel(baseDir, path)
+					if err == nil {
+						fileSet[filepath.ToSlash(rel)] = true
 					}
 					return nil
 				})

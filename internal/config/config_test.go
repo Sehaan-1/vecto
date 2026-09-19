@@ -91,3 +91,23 @@ tasks:
 		t.Fatal("expected error for unknown field 'depend', but it was silently accepted!")
 	}
 }
+
+func TestConfig_UnsupportedVersionRejected(t *testing.T) {
+	tempDir := t.TempDir()
+
+	invalidYAML := `
+version: "99"
+tasks:
+  test:
+    command: "echo test"
+`
+	if err := os.WriteFile(filepath.Join(tempDir, "vecto.yaml"), []byte(invalidYAML), 0644); err != nil {
+		t.Fatalf("failed to write vecto.yaml: %v", err)
+	}
+
+	_, err := config.LoadConfig(tempDir)
+	if err == nil {
+		t.Fatal("expected error for unsupported version '99', got nil")
+	}
+}
+

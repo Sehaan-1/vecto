@@ -50,6 +50,10 @@ func LoadConfig(dir string) (*Config, error) {
 		return nil, fmt.Errorf("vecto.yaml must define at least one task")
 	}
 
+	if cfg.Version != "1" {
+		return nil, fmt.Errorf("unsupported manifest version %q (expected \"1\")", cfg.Version)
+	}
+
 	// Validate dependencies exist
 	for taskName, task := range cfg.Tasks {
 		for _, dep := range task.Dependencies {

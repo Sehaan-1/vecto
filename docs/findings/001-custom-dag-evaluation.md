@@ -24,9 +24,10 @@ To drive Vecto's parallel build runner, the graph engine needs:
 ### 3. Measured In-Repo Kahn's Algorithm Implementation (`internal/dag`)
 We implemented an idiomatic, zero-external-dependency Kahn's algorithm in `internal/dag/dag.go`:
 - **Dependencies:** Go Standard Library only (`sort`, `strings`, `fmt`).
-- **Benchmark Results (Intel Core i7-1355U, Go 1.27):**
-  - `BenchmarkDAG_1000Nodes_TopologicalSort`: **~0.22 ms** (`227 µs/op`), 157 KB memory, 134 allocations.
-  - `BenchmarkDAG_1000Nodes_ExecutionLayers`: **~0.24 ms** (`244 µs/op`), 165 KB memory, 527 allocations.
+- **Deterministic Lexicographical Order:** Implemented via an in-place concrete typed string min-heap priority queue, guaranteeing $O((V + E) \log V)$ time with zero interface boxing allocations (avoiding $O(V^2 \log V)$ naive queue re-sorting).
+- **Benchmark Results (Intel Core i7-1355U, Go 1.22+):**
+  - `BenchmarkDAG_1000Nodes_TopologicalSort`: **~0.16 ms** (`163 µs/op`), 87 KB memory, **7 allocations**.
+  - `BenchmarkDAG_1000Nodes_ExecutionLayers`: **~0.24 ms** (`243 µs/op`), 165 KB memory, 527 allocations.
 - **Error reporting:** Backtracking DFS produces human-readable error chains: `cycle detected in task graph: A -> B -> C -> A`.
 - **Parallel layers:** Native `ExecutionLayers()` partitions tasks into concurrent execution waves.
 

@@ -26,10 +26,10 @@ Measured on an Intel Core i7-1355U (12 threads) with Go 1.22+ (raw benchmark out
 
 | Benchmark | Operations / Iterations | Latency per Op | Memory / Allocs |
 |---|---|---|---|
-| **Cache Replay / Restore** | 12,488 ops | **~0.09 ms** (`93 µs`) | 2.8 KB / 16 allocs |
-| **Topological Sort (1,000 nodes)** | 3,810 ops | **~0.31 ms** (`315 µs`) | 155 KB / 377 allocs |
-| **Execution Layer Partitioning (1,000 nodes)** | 4,719 ops | **~0.25 ms** (`252 µs`) | 165 KB / 527 allocs |
-| **SHA-256 Streaming Hash (100 files)** | 132 ops | **~10.3 ms** | 3.4 MB / 1,438 allocs |
+| **Cache Replay / Restore** | 13,464 ops | **~0.08 ms** (`84 µs`) | 2.8 KB / 16 allocs |
+| **Topological Sort (1,000 nodes)** | 7,290 ops | **~0.16 ms** (`163 µs`) | 87 KB / 7 allocs |
+| **Execution Layer Partitioning (1,000 nodes)** | 4,596 ops | **~0.24 ms** (`243 µs`) | 165 KB / 527 allocs |
+| **SHA-256 Streaming Hash (100 files)** | 139 ops | **~9.1 ms** | 3.5 MB / 1,438 allocs |
 
 To run benchmarks locally:
 ```bash
@@ -162,6 +162,9 @@ vecto clean
 # Prune cache entries older than a duration (e.g. 24h, 7d)
 vecto clean --max-age 24h
 ```
+
+> [!NOTE]
+> Flags must precede positional target arguments (e.g. `vecto run -v build`, not `vecto run build -v`), per standard Go `flag` parsing conventions.
 
 ---
 

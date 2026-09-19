@@ -2,27 +2,27 @@
 goarch: amd64
 pkg: github.com/Sehaan-1/vecto/internal/cache
 cpu: 13th Gen Intel(R) Core(TM) i7-1355U
-BenchmarkCache_Restore-12    	   12488	     93154 ns/op	    2823 B/op	      16 allocs/op
+BenchmarkCache_Restore-12    	   13464	     83664 ns/op	    2826 B/op	      16 allocs/op
 PASS
-ok  	github.com/Sehaan-1/vecto/internal/cache	3.259s
+ok  	github.com/Sehaan-1/vecto/internal/cache	2.217s
 PASS
-ok  	github.com/Sehaan-1/vecto/internal/config	0.380s
+ok  	github.com/Sehaan-1/vecto/internal/config	0.370s
 goos: windows
 goarch: amd64
 pkg: github.com/Sehaan-1/vecto/internal/dag
 cpu: 13th Gen Intel(R) Core(TM) i7-1355U
-BenchmarkDAG_1000Nodes_TopologicalSort-12    	    3810	    315295 ns/op	  155643 B/op	     377 allocs/op
-BenchmarkDAG_1000Nodes_ExecutionLayers-12    	    4719	    252140 ns/op	  165864 B/op	     527 allocs/op
+BenchmarkDAG_1000Nodes_TopologicalSort-12    	    7290	    163496 ns/op	   87376 B/op	       7 allocs/op
+BenchmarkDAG_1000Nodes_ExecutionLayers-12    	    4596	    242571 ns/op	  165865 B/op	     527 allocs/op
 PASS
-ok  	github.com/Sehaan-1/vecto/internal/dag	2.822s
+ok  	github.com/Sehaan-1/vecto/internal/dag	3.657s
 goos: windows
 goarch: amd64
 pkg: github.com/Sehaan-1/vecto/internal/hash
 cpu: 13th Gen Intel(R) Core(TM) i7-1355U
-BenchmarkHash_100Files-12    	     132	  10375356 ns/op	 3488027 B/op	    1438 allocs/op
+BenchmarkHash_100Files-12    	     139	   9069076 ns/op	 3481466 B/op	    1438 allocs/op
 PASS
-ok  	github.com/Sehaan-1/vecto/internal/hash	3.470s
+ok  	github.com/Sehaan-1/vecto/internal/hash	2.650s
 PASS
-ok  	github.com/Sehaan-1/vecto/internal/runner	0.417s
+ok  	github.com/Sehaan-1/vecto/internal/runner	0.412s
 PASS
-ok  	github.com/Sehaan-1/vecto/internal/ui	0.349s
+ok  	github.com/Sehaan-1/vecto/internal/ui	0.351s

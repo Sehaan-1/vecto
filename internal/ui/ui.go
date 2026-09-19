@@ -35,7 +35,6 @@ type Reporter struct {
 	writer io.Writer
 	isTTY  bool
 	tasks  map[string]*TaskState
-	order  []string
 }
 
 // NewReporter creates a new Reporter.
@@ -47,7 +46,6 @@ func NewReporter(w io.Writer, isTTY bool) *Reporter {
 		writer: w,
 		isTTY:  isTTY,
 		tasks:  make(map[string]*TaskState),
-		order:  make([]string, 0),
 	}
 }
 
@@ -66,7 +64,6 @@ func (r *Reporter) RegisterTasks(names []string) {
 				Name:   name,
 				Status: StatusPending,
 			}
-			r.order = append(r.order, name)
 		}
 	}
 }
