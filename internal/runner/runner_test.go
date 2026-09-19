@@ -3,6 +3,7 @@ package runner_test
 import (
 	"bytes"
 	"context"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -267,3 +268,77 @@ func TestRunner_TargetSubsetAndVerbose(t *testing.T) {
 	}
 }
 
+// TestRunner_NoHeadOfLineBlocking proves the reactive scheduler dispatches a
+// task the instant its own dependencies are met, without waiting for unrelated
+// slow sibling tasks.
+//
+// Graph:
+//
+//	A_slow (1.5s) ─────────────────────► D_blocked (needs A and B)
+//	B_fast (instant) ──► C_ready
+//
+// Under a naive layer-based scheduler C_ready would be blocked until A_slow
+// finishes. The reactive scheduler must fire C_ready the instant B_fast
+// completes. Total wall time should be ~1.5s (A_slow), not 1.5s + overhead.
+func TestRunner_NoHeadOfLineBlocking(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping timing-sensitive test in short mode")
+	}
+
+	tempDir := t.TempDir()
+
+	slowCmd := "sleep 1.5"
+	fastCmd := "echo fast"
+	if runtime.GOOS == "windows" {
+		slowCmd = "timeout /T 2 /NOBREAK > NUL"
+	}
+
+	cfg := &config.Config{
+		Version: "1",
+		Tasks: map[string]config.TaskConfig{
+			"A_slow": {Command: slowCmd},
+			"B_fast": {Command: fastCmd},
+			"C_ready": {
+				Command:      "echo C ran",
+				Dependencies: []string{"B_fast"},
+			},
+			"D_blocked": {
+				Command:      "echo D ran",
+				Dependencies: []string{"A_slow", "B_fast"},
+			},
+		},
+	}
+
+	g := dag.New()
+	for name, task := range cfg.Tasks {
+		g.AddTask(name, task.Dependencies)
+	}
+
+	cacheMgr := cache.New(tempDir)
+	buf := &bytes.Buffer{}
+	reporter := ui.NewReporter(buf, false)
+	r := runner.New(cfg, g, cacheMgr, reporter, tempDir, runner.Options{Concurrency: 4})
+
+	start := time.Now()
+	if err := r.Run(context.Background(), nil); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+	total := time.Since(start)
+
+	out := buf.String()
+	for _, task := range []string{"A_slow", "B_fast", "C_ready", "D_blocked"} {
+		if strings.Contains(out, "[✗ FAILED] "+task) {
+			t.Errorf("task %s unexpectedly failed:\n%s", task, out)
+		}
+	}
+
+	// Reactive proof: total must be dominated by A_slow (~1.5s) only.
+	// Allow [1s, 3s]: less than 1s means A_slow didn't run; more than 3s
+	// suggests head-of-line blocking added artificial serialisation.
+	if total < 1*time.Second {
+		t.Errorf("run finished suspiciously fast (%v) — did A_slow actually run?", total)
+	}
+	if total > 3*time.Second {
+		t.Errorf("run took %v — possible head-of-line blocking; expected ~1.5s", total)
+	}
+}

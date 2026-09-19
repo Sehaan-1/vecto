@@ -51,6 +51,12 @@ func (g *Graph) HasTask(name string) bool {
 	return exists
 }
 
+// Dependents returns the tasks that directly depend on the given task,
+// in sorted order. The slice must not be modified by the caller.
+func (g *Graph) Dependents(task string) []string {
+	return g.dependents[task]
+}
+
 // Tasks returns all task names in deterministic sorted order.
 func (g *Graph) Tasks() []string {
 	tasks := make([]string, 0, len(g.dependencies))

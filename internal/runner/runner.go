@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"runtime"
+	"sort"
 	"sync"
 	"time"
 
@@ -49,7 +50,9 @@ func New(cfg *config.Config, g *dag.Graph, c *cache.Manager, r *ui.Reporter, bas
 	}
 }
 
-// Run executes the requested tasks and their dependencies.
+// Run executes the requested tasks and their dependencies using a reactive,
+// event-driven scheduler. A task is dispatched the instant its last
+// dependency completes — there is no layer-level head-of-line blocking.
 func (r *Runner) Run(ctx context.Context, targetTasks []string) error {
 	startTime := time.Now()
 
@@ -65,15 +68,10 @@ func (r *Runner) Run(ctx context.Context, targetTasks []string) error {
 		}
 	}
 
-	layers, err := r.Graph.ExecutionLayers()
-	if err != nil {
-		return fmt.Errorf("resolving execution graph: %w", err)
-	}
-
-	// Precompute needed tasks in O(1) time per task lookup using graph ancestor closure
+	// Precompute needed tasks using graph ancestor closure
 	needed := r.Graph.NeededTasks(targetTasks)
 
-	// Register only needed tasks with the reporter so summary is 100% accurate
+	// Register only needed tasks with reporter so summary counts are accurate
 	neededSlice := make([]string, 0, len(needed))
 	for t := range needed {
 		neededSlice = append(neededSlice, t)
@@ -84,170 +82,228 @@ func (r *Runner) Run(ctx context.Context, targetTasks []string) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	// pendingDeps[task] = number of needed dependencies not yet resolved.
+	// A task becomes "ready" when this counter reaches zero.
+	pendingDeps := make(map[string]int, len(needed))
+	for task := range needed {
+		for _, dep := range r.Config.Tasks[task].Dependencies {
+			if needed[dep] {
+				pendingDeps[task]++
+			}
+		}
+	}
+
+	// ready is buffered to len(needed) so goroutines can push without blocking.
+	ready := make(chan string, len(needed))
+
+	// Seed the queue with all zero-dep tasks, in sorted order for determinism.
+	seeds := make([]string, 0, len(needed))
+	for task := range needed {
+		if pendingDeps[task] == 0 {
+			seeds = append(seeds, task)
+		}
+	}
+	sort.Strings(seeds)
+	for _, t := range seeds {
+		ready <- t
+	}
+
 	failedTasks := make(map[string]error)
 	unmetTasks := make(map[string]bool)
 	taskFingerprints := make(map[string]string)
 	var mu sync.Mutex
 
-	for _, layer := range layers {
-		// Filter layer to tasks needed for target execution using O(1) set
-		var activeInLayer []string
-		for _, taskName := range layer {
-			if needed[taskName] {
-				activeInLayer = append(activeInLayer, taskName)
-			}
-		}
+	sem := make(chan struct{}, r.Opts.Concurrency)
+	var wg sync.WaitGroup
 
-		if len(activeInLayer) == 0 {
-			continue
-		}
+	// Drain exactly len(needed) tasks from the ready channel.
+	// Goroutines push dependents to ready as they finish, so the channel
+	// stays live until all tasks have been dispatched.
+	for remaining := len(needed); remaining > 0; remaining-- {
+		name := <-ready // blocks until a task's deps are met
 
-		// Check if any dependencies of this layer failed or were skipped
-		var toRun []string
-		for _, taskName := range activeInLayer {
+		wg.Add(1)
+		go func(n string) {
+			defer wg.Done()
+
+			// Determine skip status before acquiring a semaphore slot so
+			// cancelled / unmet tasks don't consume worker capacity.
 			mu.Lock()
-			hasUnmetDep := false
-			for _, dep := range r.Config.Tasks[taskName].Dependencies {
-				if unmetTasks[dep] {
-					hasUnmetDep = true
-					break
+			skip := false
+			if unmetTasks[n] {
+				skip = true
+			} else {
+				for _, dep := range r.Config.Tasks[n].Dependencies {
+					if unmetTasks[dep] {
+						unmetTasks[n] = true
+						skip = true
+						break
+					}
 				}
 			}
-			if hasUnmetDep {
-				unmetTasks[taskName] = true
-				r.Reporter.TaskSkipped(taskName)
-			} else {
-				toRun = append(toRun, taskName)
+			if !skip && runCtx.Err() != nil && !r.Opts.KeepGoing {
+				unmetTasks[n] = true
+				skip = true
 			}
 			mu.Unlock()
-		}
 
-		if len(toRun) == 0 {
-			continue
-		}
-
-		// Execute toRun concurrently with bounded semaphore
-		sem := make(chan struct{}, r.Opts.Concurrency)
-		var wg sync.WaitGroup
-
-		for _, taskName := range toRun {
-			wg.Add(1)
-			go func(name string) {
-				defer wg.Done()
+			if skip {
+				r.Reporter.TaskSkipped(n)
+			} else {
+				// Acquire concurrency slot only for tasks that will actually run.
 				sem <- struct{}{}
-				defer func() { <-sem }()
+				r.runTask(runCtx, cancel, n, &mu, failedTasks, unmetTasks, taskFingerprints)
+				<-sem
+			}
 
-				// If context was cancelled by a sibling and not keep-going, skip
-				if runCtx.Err() != nil && !r.Opts.KeepGoing {
-					mu.Lock()
-					unmetTasks[name] = true
-					mu.Unlock()
-					r.Reporter.TaskSkipped(name)
-					return
+			// Push dependents whose dep-counter just hit zero to the ready queue.
+			// This fires regardless of success/skip/fail so the chain always drains.
+			mu.Lock()
+			for _, dep := range r.Graph.Dependents(n) {
+				if !needed[dep] {
+					continue
 				}
-
-				taskCfg := r.Config.Tasks[name]
-
-				// Transitive dependency fingerprints
-				depFingerprints := make(map[string]string)
-				mu.Lock()
-				for _, dep := range taskCfg.Dependencies {
-					if fp, ok := taskFingerprints[dep]; ok {
-						depFingerprints[dep] = fp
-					}
+				pendingDeps[dep]--
+				if pendingDeps[dep] == 0 {
+					ready <- dep
 				}
-				mu.Unlock()
-
-				// Compute cache fingerprint
-				fingerprint, err := hash.ComputeTaskFingerprint(r.BaseDir, taskCfg.Command, taskCfg.Inputs, taskCfg.Env, depFingerprints)
-				if err != nil {
-					mu.Lock()
-					failedTasks[name] = err
-					unmetTasks[name] = true
-					mu.Unlock()
-					r.Reporter.TaskFailed(name, fmt.Errorf("fingerprint error: %w", err), nil)
-					if !r.Opts.KeepGoing {
-						cancel()
-					}
-					return
-				}
-
-				mu.Lock()
-				taskFingerprints[name] = fingerprint
-				mu.Unlock()
-
-				// Check cache hit
-				if !r.Opts.Force && r.Cache.Has(fingerprint) {
-					_, logs, err := r.Cache.Restore(fingerprint)
-					if err == nil {
-						r.Reporter.TaskCached(name)
-						if r.Opts.Verbose && len(logs) > 0 {
-							r.Reporter.TaskOutput(name, logs)
-						}
-						return
-					}
-				}
-
-				// Execute task
-				r.Reporter.TaskStarted(name)
-				taskStart := time.Now()
-
-				output, execErr := r.executeCommand(runCtx, taskCfg.Command)
-				duration := time.Since(taskStart)
-
-				if execErr != nil {
-					mu.Lock()
-					failedTasks[name] = execErr
-					unmetTasks[name] = true
-					mu.Unlock()
-					r.Reporter.TaskFailed(name, execErr, output)
-					if !r.Opts.KeepGoing {
-						cancel()
-					}
-					return
-				}
-
-				// Cache successful result, handling errors gracefully
-				if storeErr := r.Cache.Store(fingerprint, name, 0, duration, output, taskCfg.Outputs); storeErr != nil {
-					fmt.Fprintf(r.Reporter.Writer(), "warning: failed to cache task %s: %v\n", name, storeErr)
-				}
-
-				r.Reporter.TaskCompleted(name, duration)
-				if r.Opts.Verbose && len(output) > 0 {
-					r.Reporter.TaskOutput(name, output)
-				}
-			}(taskName)
-		}
-
-		wg.Wait()
-
-		if len(failedTasks) > 0 && !r.Opts.KeepGoing {
-			break
-		}
+			}
+			mu.Unlock()
+		}(name)
 	}
+
+	wg.Wait()
 
 	r.Reporter.Summary(time.Since(startTime))
 
 	if len(failedTasks) > 0 {
 		return fmt.Errorf("%d task(s) failed during execution", len(failedTasks))
 	}
-
 	return nil
 }
 
+// runTask executes a single task: computes its fingerprint, checks the cache,
+// runs the command if needed, and stores the result.
+func (r *Runner) runTask(
+	runCtx context.Context,
+	cancel context.CancelFunc,
+	name string,
+	mu *sync.Mutex,
+	failedTasks map[string]error,
+	unmetTasks map[string]bool,
+	taskFingerprints map[string]string,
+) {
+	taskCfg := r.Config.Tasks[name]
+
+	// Collect transitive dependency fingerprints for cache key computation
+	mu.Lock()
+	depFingerprints := make(map[string]string, len(taskCfg.Dependencies))
+	for _, dep := range taskCfg.Dependencies {
+		if fp, ok := taskFingerprints[dep]; ok {
+			depFingerprints[dep] = fp
+		}
+	}
+	mu.Unlock()
+
+	// Compute content-addressable fingerprint
+	fingerprint, err := hash.ComputeTaskFingerprint(r.BaseDir, taskCfg.Command, taskCfg.Inputs, taskCfg.Env, depFingerprints)
+	if err != nil {
+		mu.Lock()
+		failedTasks[name] = err
+		unmetTasks[name] = true
+		mu.Unlock()
+		r.Reporter.TaskFailed(name, fmt.Errorf("fingerprint error: %w", err), nil)
+		if !r.Opts.KeepGoing {
+			cancel()
+		}
+		return
+	}
+
+	mu.Lock()
+	taskFingerprints[name] = fingerprint
+	mu.Unlock()
+
+	// Cache hit: restore and return
+	if !r.Opts.Force && r.Cache.Has(fingerprint) {
+		_, logs, err := r.Cache.Restore(fingerprint)
+		if err == nil {
+			r.Reporter.TaskCached(name)
+			if r.Opts.Verbose && len(logs) > 0 {
+				r.Reporter.TaskOutput(name, logs)
+			}
+			return
+		}
+	}
+
+	// Execute the task command
+	r.Reporter.TaskStarted(name)
+	taskStart := time.Now()
+
+	output, execErr := r.executeCommand(runCtx, taskCfg.Command)
+	duration := time.Since(taskStart)
+
+	if execErr != nil {
+		mu.Lock()
+		failedTasks[name] = execErr
+		unmetTasks[name] = true
+		mu.Unlock()
+		r.Reporter.TaskFailed(name, execErr, output)
+		if !r.Opts.KeepGoing {
+			cancel()
+		}
+		return
+	}
+
+	// Store successful result; warn and continue on store failure
+	if storeErr := r.Cache.Store(fingerprint, name, 0, duration, output, taskCfg.Outputs); storeErr != nil {
+		fmt.Fprintf(r.Reporter.Writer(), "warning: failed to cache task %s: %v\n", name, storeErr)
+	}
+
+	r.Reporter.TaskCompleted(name, duration)
+	if r.Opts.Verbose && len(output) > 0 {
+		r.Reporter.TaskOutput(name, output)
+	}
+}
+
+// executeCommand runs cmdStr in a subprocess with process-group isolation.
+// setProcAttrs (platform-specific) places the child in its own process group
+// so that killProcessGroup terminates all descendants, not just the shell.
 func (r *Runner) executeCommand(ctx context.Context, cmdStr string) ([]byte, error) {
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, "cmd.exe", "/C", cmdStr)
+		cmd = exec.Command("cmd.exe", "/C", cmdStr)
 	} else {
-		cmd = exec.CommandContext(ctx, "sh", "-c", cmdStr)
+		cmd = exec.Command("sh", "-c", cmdStr)
 	}
 
 	cmd.Dir = r.BaseDir
+	setProcAttrs(cmd) // platform-specific process group setup
+
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
 
-	err := cmd.Run()
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+
+	// Kill the entire process group when context is cancelled.
+	// This prevents orphaned zombie processes when a sibling task fails.
+	watchDone := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			killProcessGroup(cmd)
+		case <-watchDone:
+		}
+	}()
+
+	err := cmd.Wait()
+	close(watchDone)
+
+	// Surface context cancellation as the canonical error
+	if ctx.Err() != nil {
+		return buf.Bytes(), ctx.Err()
+	}
 	return buf.Bytes(), err
 }
