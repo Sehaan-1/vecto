@@ -8,7 +8,7 @@ import (
 
 // Graph represents a directed acyclic graph of tasks.
 type Graph struct {
-	// tasks maps task name to dependencies
+	// dependencies maps task name to tasks it depends on
 	dependencies map[string][]string
 	// dependents maps task name to tasks that depend on it
 	dependents map[string][]string
@@ -42,7 +42,7 @@ func (g *Graph) HasTask(name string) bool {
 	return exists
 }
 
-// Tasks returns all task names in sorted order.
+// Tasks returns all task names in deterministic sorted order.
 func (g *Graph) Tasks() []string {
 	tasks := make([]string, 0, len(g.dependencies))
 	for t := range g.dependencies {
@@ -52,7 +52,7 @@ func (g *Graph) Tasks() []string {
 	return tasks
 }
 
-// TopologicalSort returns a linear order of tasks where all dependencies precede dependents.
+// TopologicalSort returns a 100% deterministic linear order of tasks where all dependencies precede dependents.
 // If a cycle exists, it returns an error with the exact cycle path.
 func (g *Graph) TopologicalSort() ([]string, error) {
 	indegree := make(map[string]int)
@@ -74,12 +74,18 @@ func (g *Graph) TopologicalSort() ([]string, error) {
 		queue = queue[1:]
 		result = append(result, curr)
 
-		for _, dependent := range g.dependents[curr] {
+		// Sort dependents deterministically before visiting
+		deps := make([]string, len(g.dependents[curr]))
+		copy(deps, g.dependents[curr])
+		sort.Strings(deps)
+
+		for _, dependent := range deps {
 			indegree[dependent]--
 			if indegree[dependent] == 0 {
 				queue = append(queue, dependent)
 			}
 		}
+		sort.Strings(queue)
 	}
 
 	if len(result) != len(g.dependencies) {
@@ -114,7 +120,11 @@ func (g *Graph) ExecutionLayers() ([][]string, error) {
 
 		nextLayer := make([]string, 0)
 		for _, task := range currentLayer {
-			for _, dependent := range g.dependents[task] {
+			deps := make([]string, len(g.dependents[task]))
+			copy(deps, g.dependents[task])
+			sort.Strings(deps)
+
+			for _, dependent := range deps {
 				indegree[dependent]--
 				if indegree[dependent] == 0 {
 					nextLayer = append(nextLayer, dependent)
@@ -133,6 +143,43 @@ func (g *Graph) ExecutionLayers() ([][]string, error) {
 	return layers, nil
 }
 
+// Ancestors returns the set of all upstream tasks that target directly or transitively depends on.
+func (g *Graph) Ancestors(target string) map[string]bool {
+	visited := make(map[string]bool)
+	var dfs func(u string)
+	dfs = func(u string) {
+		for _, dep := range g.dependencies[u] {
+			if !visited[dep] {
+				visited[dep] = true
+				dfs(dep)
+			}
+		}
+	}
+	dfs(target)
+	return visited
+}
+
+// NeededTasks returns the set of all tasks required to execute the given targets.
+// If targets is empty, all tasks in the graph are needed.
+func (g *Graph) NeededTasks(targets []string) map[string]bool {
+	if len(targets) == 0 {
+		all := make(map[string]bool, len(g.dependencies))
+		for t := range g.dependencies {
+			all[t] = true
+		}
+		return all
+	}
+
+	needed := make(map[string]bool)
+	for _, t := range targets {
+		needed[t] = true
+		for anc := range g.Ancestors(t) {
+			needed[anc] = true
+		}
+	}
+	return needed
+}
+
 func (g *Graph) findCyclePath(remaining map[string]int) string {
 	visited := make(map[string]bool)
 	recStack := make(map[string]bool)
@@ -144,7 +191,12 @@ func (g *Graph) findCyclePath(remaining map[string]int) string {
 		recStack[u] = true
 		path = append(path, u)
 
-		for _, v := range g.dependencies[u] {
+		// Sort dependencies deterministically for consistent cycle error messages
+		sortedDeps := make([]string, len(g.dependencies[u]))
+		copy(sortedDeps, g.dependencies[u])
+		sort.Strings(sortedDeps)
+
+		for _, v := range sortedDeps {
 			if !visited[v] {
 				if dfs(v) {
 					return true
@@ -160,8 +212,16 @@ func (g *Graph) findCyclePath(remaining map[string]int) string {
 		return false
 	}
 
+	allNodes := make([]string, 0, len(remaining))
 	for task, deg := range remaining {
-		if deg > 0 && !visited[task] {
+		if deg > 0 {
+			allNodes = append(allNodes, task)
+		}
+	}
+	sort.Strings(allNodes)
+
+	for _, task := range allNodes {
+		if !visited[task] {
 			if dfs(task) {
 				return strings.Join(path, " -> ")
 			}

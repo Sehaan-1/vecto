@@ -54,6 +54,42 @@ func TestDAG_DiamondDependency(t *testing.T) {
 	}
 }
 
+func TestDAG_DeterministicTopologicalSort(t *testing.T) {
+	// Repeat 50 times to ensure Go map iteration randomness never alters the topological order
+	for iter := 0; iter < 50; iter++ {
+		g := dag.New()
+		g.AddTask("D", []string{"B", "C"})
+		g.AddTask("C", []string{"A"})
+		g.AddTask("B", []string{"A"})
+		g.AddTask("A", nil)
+
+		sorted, err := g.TopologicalSort()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		expected := []string{"A", "B", "C", "D"}
+		if !reflect.DeepEqual(sorted, expected) {
+			t.Fatalf("iteration %d: non-deterministic sort! Expected %v, got %v", iter, expected, sorted)
+		}
+	}
+}
+
+func TestDAG_NeededTasks(t *testing.T) {
+	g := dag.New()
+	g.AddTask("compile", nil)
+	g.AddTask("test", []string{"compile"})
+	g.AddTask("lint", nil)
+	g.AddTask("docs", nil)
+
+	needed := g.NeededTasks([]string{"test"})
+	if !needed["compile"] || !needed["test"] {
+		t.Errorf("expected compile and test to be needed, got %v", needed)
+	}
+	if needed["lint"] || needed["docs"] {
+		t.Errorf("lint and docs should not be needed for test, got %v", needed)
+	}
+}
+
 func TestDAG_CycleDetection(t *testing.T) {
 	g := dag.New()
 	g.AddTask("A", []string{"B"})
@@ -78,7 +114,6 @@ func build1000NodeGraph() *dag.Graph {
 			nodeName := fmt.Sprintf("node_L%d_W%d", layer, width)
 			var deps []string
 			if layer > 0 {
-				// Depends on node directly above and diagonal
 				deps = append(deps, fmt.Sprintf("node_L%d_W%d", layer-1, width))
 				if width > 0 {
 					deps = append(deps, fmt.Sprintf("node_L%d_W%d", layer-1, width-1))

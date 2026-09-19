@@ -192,3 +192,78 @@ func TestRunner_TransitiveSkip_MultiLevel(t *testing.T) {
 		t.Errorf("expected D_independent to succeed under keep-going, got:\n%s", out)
 	}
 }
+
+func TestRunner_TargetSubsetAndVerbose(t *testing.T) {
+	tempDir := t.TempDir()
+
+	cfg := &config.Config{
+		Version: "1",
+		Tasks: map[string]config.TaskConfig{
+			"codegen": {
+				Command: "echo generating code",
+			},
+			"lint": {
+				Command: "echo linting code",
+			},
+			"build": {
+				Command:      "echo compiling binary",
+				Dependencies: []string{"codegen"},
+			},
+			"deploy": {
+				Command:      "echo deploying binary",
+				Dependencies: []string{"build"},
+			},
+		},
+	}
+
+	g := dag.New()
+	for name, task := range cfg.Tasks {
+		g.AddTask(name, task.Dependencies)
+	}
+
+	cacheMgr := cache.New(tempDir)
+	buf := &bytes.Buffer{}
+	reporter := ui.NewReporter(buf, false)
+
+	// Target ONLY build (which depends on codegen).
+	// lint and deploy should NOT run, and should NOT appear in total count.
+	r := runner.New(cfg, g, cacheMgr, reporter, tempDir, runner.Options{
+		Concurrency: 2,
+		Verbose:     true,
+	})
+
+	err := r.Run(context.Background(), []string{"build"})
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	reporter.Summary(50 * time.Millisecond)
+	out := buf.String()
+
+	// Verify codegen and build ran
+	if !strings.Contains(out, "[✓] codegen") {
+		t.Errorf("expected codegen to execute, got:\n%s", out)
+	}
+	if !strings.Contains(out, "[✓] build") {
+		t.Errorf("expected build to execute, got:\n%s", out)
+	}
+
+	// Verify lint and deploy did NOT execute
+	if strings.Contains(out, "lint") {
+		t.Errorf("lint should not have executed or been registered, got:\n%s", out)
+	}
+	if strings.Contains(out, "deploy") {
+		t.Errorf("deploy should not have executed or been registered, got:\n%s", out)
+	}
+
+	// Verify total count in summary is 2 (only targeted + dependencies), NOT 4
+	if !strings.Contains(out, "Tasks:    2 total (0 cached, 2 executed, 0 failed, 0 skipped)") {
+		t.Errorf("expected Summary to report 2 total tasks for target 'build', got:\n%s", out)
+	}
+
+	// Verify verbose output surfaced stdout
+	if !strings.Contains(out, "compiling binary") {
+		t.Errorf("expected verbose mode to surface command stdout, got:\n%s", out)
+	}
+}
+

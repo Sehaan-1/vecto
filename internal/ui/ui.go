@@ -51,6 +51,11 @@ func NewReporter(w io.Writer, isTTY bool) *Reporter {
 	}
 }
 
+// Writer returns the underlying io.Writer.
+func (r *Reporter) Writer() io.Writer {
+	return r.writer
+}
+
 // RegisterTasks initializes task ordering.
 func (r *Reporter) RegisterTasks(names []string) {
 	r.mu.Lock()
@@ -74,7 +79,11 @@ func (r *Reporter) TaskStarted(name string) {
 		t.Status = StatusRunning
 		t.StartTime = time.Now()
 	}
-	fmt.Fprintf(r.writer, "[-] %s ... running\n", name)
+	prefix := "[-]"
+	if r.isTTY {
+		prefix = "\033[36m[-]\033[0m"
+	}
+	fmt.Fprintf(r.writer, "%s %s ... running\n", prefix, name)
 }
 
 // TaskCompleted marks a task as successfully finished.
@@ -85,10 +94,14 @@ func (r *Reporter) TaskCompleted(name string, duration time.Duration) {
 		t.Status = StatusSuccess
 		t.Duration = duration
 	}
-	fmt.Fprintf(r.writer, "[✓] %s (%.2fs)\n", name, duration.Seconds())
+	prefix := "[✓]"
+	if r.isTTY {
+		prefix = "\033[32m[✓]\033[0m"
+	}
+	fmt.Fprintf(r.writer, "%s %s (%.2fs)\n", prefix, name, duration.Seconds())
 }
 
-// TaskCached marks a task as replayed from cache in 0.00s.
+// TaskCached marks a task as replayed from cache.
 func (r *Reporter) TaskCached(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -96,7 +109,20 @@ func (r *Reporter) TaskCached(name string) {
 		t.Status = StatusCached
 		t.Duration = 0
 	}
-	fmt.Fprintf(r.writer, "[⚡ CACHED] %s (0.00s)\n", name)
+	prefix := "[⚡ CACHED]"
+	if r.isTTY {
+		prefix = "\033[33m[⚡ CACHED]\033[0m"
+	}
+	fmt.Fprintf(r.writer, "%s %s\n", prefix, name)
+}
+
+// TaskOutput outputs detailed command logs (e.g. for verbose mode).
+func (r *Reporter) TaskOutput(name string, output []byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(output) > 0 {
+		fmt.Fprintf(r.writer, "--- Output: %s ---\n%s--------------------\n", name, string(output))
+	}
 }
 
 // TaskFailed marks a task as failed with an error and prints command output.
@@ -107,7 +133,11 @@ func (r *Reporter) TaskFailed(name string, err error, output []byte) {
 		t.Status = StatusFailed
 		t.Err = err
 	}
-	fmt.Fprintf(r.writer, "[✗ FAILED] %s: %v\n", name, err)
+	prefix := "[✗ FAILED]"
+	if r.isTTY {
+		prefix = "\033[31m[✗ FAILED]\033[0m"
+	}
+	fmt.Fprintf(r.writer, "%s %s: %v\n", prefix, name, err)
 	if len(output) > 0 {
 		fmt.Fprintf(r.writer, "\n--- Output: %s ---\n%s--------------------\n\n", name, string(output))
 	}
@@ -120,7 +150,11 @@ func (r *Reporter) TaskSkipped(name string) {
 	if t, ok := r.tasks[name]; ok {
 		t.Status = StatusSkipped
 	}
-	fmt.Fprintf(r.writer, "[○ SKIPPED] %s\n", name)
+	prefix := "[○ SKIPPED]"
+	if r.isTTY {
+		prefix = "\033[90m[○ SKIPPED]\033[0m"
+	}
+	fmt.Fprintf(r.writer, "%s %s\n", prefix, name)
 }
 
 // Summary prints total execution summary.

@@ -15,25 +15,25 @@ In modern software projects, build and test pipelines often waste significant ti
 **Vecto** solves this by:
 1. **Parallel Execution via DAG:** Parsing tasks and their dependencies into an execution graph, partitioning independent tasks into concurrent execution waves across available CPU cores.
 2. **Cryptographic Content-Addressed Caching:** Calculating a deterministic SHA-256 fingerprint from the command string, input file contents, environment variables, and **transitive upstream dependency fingerprints**.
-3. **Zero-Second Replay (`[⚡ CACHED] 0.00s`):** Restoring logs and output artifacts instantly when inputs have not changed.
+3. **Sub-Millisecond Replay (`[⚡ CACHED]`):** Restoring logs and output artifacts directly from content-addressable storage when inputs have not changed.
 4. **Resilient Failure Lifecycle:** Failing fast on the first broken step by gracefully terminating sibling processes, while supporting `--keep-going` (`-k`) for CI test collection.
 
 ---
 
 ## Benchmarks & Performance
 
-Measured on an Intel Core i7-1355U (12 threads) running Go 1.27:
+Measured on an Intel Core i7-1355U (12 threads) with Go 1.22+ (raw benchmark output committed in [docs/benchmarks.txt](docs/benchmarks.txt) and automated in CI on every push):
 
 | Benchmark | Operations / Iterations | Latency per Op | Memory / Allocs |
 |---|---|---|---|
-| **Topological Sort (1,000-node graph)** | 4,429 ops | **~0.22 ms** (`227 µs`) | 157 KB / 134 allocs |
-| **Execution Layer Partitioning (1,000 nodes)** | 4,684 ops | **~0.24 ms** (`244 µs`) | 165 KB / 527 allocs |
-| **SHA-256 Streaming Hash (100 files)** | 130 ops | **~9.9 ms** | 3.4 MB / 1,438 allocs |
-| **Cached Task Replay** | E2E integration | **0.00s** (instantaneous disk hit) | — |
+| **Cache Replay / Restore** | 12,488 ops | **~0.09 ms** (`93 µs`) | 2.8 KB / 16 allocs |
+| **Topological Sort (1,000 nodes)** | 3,810 ops | **~0.31 ms** (`315 µs`) | 155 KB / 377 allocs |
+| **Execution Layer Partitioning (1,000 nodes)** | 4,719 ops | **~0.25 ms** (`252 µs`) | 165 KB / 527 allocs |
+| **SHA-256 Streaming Hash (100 files)** | 132 ops | **~10.3 ms** | 3.4 MB / 1,438 allocs |
 
 To run benchmarks locally:
 ```bash
-go test -run='^$' -bench=. -benchmem ./internal/dag ./internal/hash
+go test -run='^$' -bench=. -benchmem ./internal/...
 ```
 
 ---
@@ -150,11 +150,17 @@ vecto run --keep-going
 # Bypass cache and force re-execution
 vecto run --force
 
+# Stream command stdout/stderr for all tasks (including successful and cached)
+vecto run --verbose build
+
 # List declared tasks and dependency relationships
 vecto list
 
-# Clear local cache storage (.vecto/cache)
+# Clear entire local cache storage (.vecto/cache)
 vecto clean
+
+# Prune cache entries older than a duration (e.g. 24h, 7d)
+vecto clean --max-age 24h
 ```
 
 ---

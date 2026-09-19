@@ -13,4 +13,6 @@ dist/
 # Agent & local metadata
 .claude/
 .cuecards/
+docs/cuecards/
+docs/lanes/
 *.log

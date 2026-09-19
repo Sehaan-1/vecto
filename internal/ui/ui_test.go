@@ -61,3 +61,28 @@ func TestUI_TaskFailedShowsOutput(t *testing.T) {
 		t.Errorf("expected compiler error output in UI, got:\n%s", out)
 	}
 }
+
+func TestUI_TTYColorOutput(t *testing.T) {
+	buf := &bytes.Buffer{}
+	reporter := ui.NewReporter(buf, true)
+
+	reporter.RegisterTasks([]string{"build"})
+	reporter.TaskStarted("build")
+	reporter.TaskCompleted("build", 50*time.Millisecond)
+	reporter.TaskCached("build")
+	reporter.TaskSkipped("build")
+	reporter.TaskFailed("build", errors.New("boom"), nil)
+
+	out := buf.String()
+	// Check for ANSI color escape sequences
+	if !strings.Contains(out, "\033[32m[✓]\033[0m") {
+		t.Errorf("expected green [✓] ANSI escape in TTY mode, got:\n%s", out)
+	}
+	if !strings.Contains(out, "\033[33m[⚡ CACHED]\033[0m") {
+		t.Errorf("expected yellow [⚡ CACHED] ANSI escape in TTY mode, got:\n%s", out)
+	}
+	if !strings.Contains(out, "\033[31m[✗ FAILED]\033[0m") {
+		t.Errorf("expected red [✗ FAILED] ANSI escape in TTY mode, got:\n%s", out)
+	}
+}
+

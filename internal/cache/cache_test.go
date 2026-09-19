@@ -1,6 +1,7 @@
 package cache_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -76,5 +77,55 @@ func TestCache_StoreAndRestore(t *testing.T) {
 		if info.Mode().Perm()&0111 == 0 {
 			t.Errorf("executable permissions were lost on cache restore: mode is %v", info.Mode())
 		}
+	}
+}
+
+func TestCache_Prune(t *testing.T) {
+	tempDir := t.TempDir()
+	mgr := cache.New(tempDir)
+
+	// Entry 1: Old entry (created 2 hours ago)
+	err := mgr.Store("old_hash", "old_task", 0, 100*time.Millisecond, []byte("old logs"), nil)
+	if err != nil {
+		t.Fatalf("Store failed: %v", err)
+	}
+
+	// Manually backdate old_hash meta.json
+	metaFile := filepath.Join(mgr.CacheDir, "old_hash", "meta.json")
+	data, _ := os.ReadFile(metaFile)
+	var entry cache.Entry
+	_ = json.Unmarshal(data, &entry)
+	entry.Timestamp = time.Now().Add(-2 * time.Hour)
+	backdated, _ := json.Marshal(entry)
+	_ = os.WriteFile(metaFile, backdated, 0644)
+
+	// Entry 2: Fresh entry
+	_ = mgr.Store("fresh_hash", "fresh_task", 0, 50*time.Millisecond, []byte("fresh logs"), nil)
+
+	// Prune older than 1 hour
+	pruned, err := mgr.Prune(1 * time.Hour)
+	if err != nil {
+		t.Fatalf("Prune failed: %v", err)
+	}
+	if pruned != 1 {
+		t.Errorf("expected 1 pruned entry, got %d", pruned)
+	}
+
+	if mgr.Has("old_hash") {
+		t.Errorf("expected old_hash to be deleted by prune")
+	}
+	if !mgr.Has("fresh_hash") {
+		t.Errorf("expected fresh_hash to remain after prune")
+	}
+}
+
+func BenchmarkCache_Restore(b *testing.B) {
+	tempDir := b.TempDir()
+	mgr := cache.New(tempDir)
+	_ = mgr.Store("bench_hash", "bench_task", 0, 10*time.Millisecond, []byte("benchmark log content"), nil)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _, _ = mgr.Restore("bench_hash")
 	}
 }

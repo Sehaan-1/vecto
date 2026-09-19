@@ -70,3 +70,24 @@ tasks:
 		t.Fatal("expected error for missing dependency, got nil")
 	}
 }
+
+func TestConfig_UnknownFieldRejected(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// Typo: "depend" instead of "deps"
+	typoYAML := `
+version: "1"
+tasks:
+  test:
+    command: "echo test"
+    depend: ["compile"]
+`
+	if err := os.WriteFile(filepath.Join(tempDir, "vecto.yaml"), []byte(typoYAML), 0644); err != nil {
+		t.Fatalf("failed to write vecto.yaml: %v", err)
+	}
+
+	_, err := config.LoadConfig(tempDir)
+	if err == nil {
+		t.Fatal("expected error for unknown field 'depend', but it was silently accepted!")
+	}
+}

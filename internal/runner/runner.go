@@ -21,6 +21,7 @@ type Options struct {
 	Concurrency int
 	KeepGoing   bool
 	Force       bool
+	Verbose     bool
 }
 
 // Runner coordinates concurrent task scheduling and execution.
@@ -69,8 +70,15 @@ func (r *Runner) Run(ctx context.Context, targetTasks []string) error {
 		return fmt.Errorf("resolving execution graph: %w", err)
 	}
 
-	allTasks := r.Graph.Tasks()
-	r.Reporter.RegisterTasks(allTasks)
+	// Precompute needed tasks in O(1) time per task lookup using graph ancestor closure
+	needed := r.Graph.NeededTasks(targetTasks)
+
+	// Register only needed tasks with the reporter so summary is 100% accurate
+	neededSlice := make([]string, 0, len(needed))
+	for t := range needed {
+		neededSlice = append(neededSlice, t)
+	}
+	r.Reporter.RegisterTasks(neededSlice)
 
 	// Context with cancellation on failure
 	runCtx, cancel := context.WithCancel(ctx)
@@ -82,10 +90,10 @@ func (r *Runner) Run(ctx context.Context, targetTasks []string) error {
 	var mu sync.Mutex
 
 	for _, layer := range layers {
-		// Filter layer to tasks needed for target execution
+		// Filter layer to tasks needed for target execution using O(1) set
 		var activeInLayer []string
 		for _, taskName := range layer {
-			if r.isNeeded(taskName, targetTasks) {
+			if needed[taskName] {
 				activeInLayer = append(activeInLayer, taskName)
 			}
 		}
@@ -170,9 +178,12 @@ func (r *Runner) Run(ctx context.Context, targetTasks []string) error {
 
 				// Check cache hit
 				if !r.Opts.Force && r.Cache.Has(fingerprint) {
-					_, _, err := r.Cache.Restore(fingerprint)
+					_, logs, err := r.Cache.Restore(fingerprint)
 					if err == nil {
 						r.Reporter.TaskCached(name)
+						if r.Opts.Verbose && len(logs) > 0 {
+							r.Reporter.TaskOutput(name, logs)
+						}
 						return
 					}
 				}
@@ -196,9 +207,15 @@ func (r *Runner) Run(ctx context.Context, targetTasks []string) error {
 					return
 				}
 
-				// Cache successful result
-				_ = r.Cache.Store(fingerprint, name, 0, duration, output, taskCfg.Outputs)
+				// Cache successful result, handling errors gracefully
+				if storeErr := r.Cache.Store(fingerprint, name, 0, duration, output, taskCfg.Outputs); storeErr != nil {
+					fmt.Fprintf(r.Reporter.Writer(), "warning: failed to cache task %s: %v\n", name, storeErr)
+				}
+
 				r.Reporter.TaskCompleted(name, duration)
+				if r.Opts.Verbose && len(output) > 0 {
+					r.Reporter.TaskOutput(name, output)
+				}
 			}(taskName)
 		}
 
@@ -216,29 +233,6 @@ func (r *Runner) Run(ctx context.Context, targetTasks []string) error {
 	}
 
 	return nil
-}
-
-func (r *Runner) isNeeded(taskName string, targets []string) bool {
-	for _, target := range targets {
-		if taskName == target {
-			return true
-		}
-		// Or if target depends on taskName
-		if r.dependsOn(target, taskName) {
-			return true
-		}
-	}
-	return false
-}
-
-func (r *Runner) dependsOn(target, candidate string) bool {
-	deps := r.Config.Tasks[target].Dependencies
-	for _, dep := range deps {
-		if dep == candidate || r.dependsOn(dep, candidate) {
-			return true
-		}
-	}
-	return false
 }
 
 func (r *Runner) executeCommand(ctx context.Context, cmdStr string) ([]byte, error) {

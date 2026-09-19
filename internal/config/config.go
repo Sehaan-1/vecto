@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,6 +26,7 @@ type Config struct {
 }
 
 // LoadConfig reads and parses vecto.yaml from the given directory.
+// It strictly rejects unknown fields using KnownFields(true) so typos like "depend:" are caught immediately.
 func LoadConfig(dir string) (*Config, error) {
 	manifestPath := filepath.Join(dir, "vecto.yaml")
 	data, err := os.ReadFile(manifestPath)
@@ -38,7 +40,9 @@ func LoadConfig(dir string) (*Config, error) {
 	}
 
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&cfg); err != nil {
 		return nil, fmt.Errorf("parsing vecto.yaml: %w", err)
 	}
 

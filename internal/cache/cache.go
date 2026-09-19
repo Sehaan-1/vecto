@@ -138,6 +138,46 @@ func (m *Manager) Clean() error {
 	return os.RemoveAll(m.CacheDir)
 }
 
+// Prune removes cache entries older than maxAge based on their recorded Timestamp.
+func (m *Manager) Prune(maxAge time.Duration) (int, error) {
+	entries, err := os.ReadDir(m.CacheDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+
+	cutoff := time.Now().Add(-maxAge)
+	pruned := 0
+
+	for _, d := range entries {
+		if !d.IsDir() {
+			continue
+		}
+		entryDir := filepath.Join(m.CacheDir, d.Name())
+		metaFile := filepath.Join(entryDir, "meta.json")
+
+		data, err := os.ReadFile(metaFile)
+		if err != nil {
+			continue
+		}
+
+		var entry Entry
+		if err := json.Unmarshal(data, &entry); err != nil {
+			continue
+		}
+
+		if entry.Timestamp.Before(cutoff) {
+			if err := os.RemoveAll(entryDir); err == nil {
+				pruned++
+			}
+		}
+	}
+
+	return pruned, nil
+}
+
 func copyFile(src, dst string) error {
 	info, err := os.Stat(src)
 	if err != nil {
