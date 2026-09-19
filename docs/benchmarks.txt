@@ -1,4 +1,4 @@
-﻿goos: windows
+goos: windows
 goarch: amd64
 pkg: github.com/Sehaan-1/vecto/internal/cache
 cpu: 13th Gen Intel(R) Core(TM) i7-1355U
@@ -12,7 +12,7 @@ goarch: amd64
 pkg: github.com/Sehaan-1/vecto/internal/dag
 cpu: 13th Gen Intel(R) Core(TM) i7-1355U
 BenchmarkDAG_1000Nodes_TopologicalSort-12    	    7290	    163496 ns/op	   87376 B/op	       7 allocs/op
-BenchmarkDAG_1000Nodes_ExecutionLayers-12    	    4596	    242571 ns/op	  165865 B/op	     527 allocs/op
+BenchmarkDAG_1000Nodes_ExecutionLayers-12    	    4596	    242571 ns/op	  165865 B/op	     527 allocs/op  # PRE-OPT baseline (commit af39b5f); per-task make/copy/sort removed in b6e615d
 PASS
 ok  	github.com/Sehaan-1/vecto/internal/dag	3.657s
 goos: windows
