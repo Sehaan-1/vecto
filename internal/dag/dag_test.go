@@ -125,6 +125,43 @@ func build1000NodeGraph() *dag.Graph {
 	return g
 }
 
+func TestDAG_TopologicalOrderValidity(t *testing.T) {
+	g := build1000NodeGraph()
+	sorted, err := g.TopologicalSort()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Build position index: every node must appear exactly once.
+	pos := make(map[string]int, len(sorted))
+	for i, name := range sorted {
+		if _, dup := pos[name]; dup {
+			t.Fatalf("duplicate node in sort output: %q", name)
+		}
+		pos[name] = i
+	}
+
+	// For every edge dep→task, dep must appear strictly before task.
+	// We rebuild edge set inline from the same generator.
+	for layer := 0; layer < 100; layer++ {
+		for width := 0; width < 10; width++ {
+			nodeName := fmt.Sprintf("node_L%d_W%d", layer, width)
+			if layer > 0 {
+				dep1 := fmt.Sprintf("node_L%d_W%d", layer-1, width)
+				if pos[dep1] >= pos[nodeName] {
+					t.Errorf("edge violation: %q (pos %d) should precede %q (pos %d)", dep1, pos[dep1], nodeName, pos[nodeName])
+				}
+				if width > 0 {
+					dep2 := fmt.Sprintf("node_L%d_W%d", layer-1, width-1)
+					if pos[dep2] >= pos[nodeName] {
+						t.Errorf("edge violation: %q (pos %d) should precede %q (pos %d)", dep2, pos[dep2], nodeName, pos[nodeName])
+					}
+				}
+			}
+		}
+	}
+}
+
 func BenchmarkDAG_1000Nodes_TopologicalSort(b *testing.B) {
 	g := build1000NodeGraph()
 	b.ResetTimer()

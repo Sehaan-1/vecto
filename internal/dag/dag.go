@@ -29,7 +29,16 @@ func (g *Graph) AddTask(name string, deps []string) {
 	}
 	for _, dep := range deps {
 		g.dependencies[name] = append(g.dependencies[name], dep)
-		g.dependents[dep] = append(g.dependents[dep], name)
+		// Maintain dependents in sorted order via a single insertion step so
+		// ExecutionLayers can iterate directly without per-task copies.
+		dl := g.dependents[dep]
+		i := len(dl)
+		dl = append(dl, name)
+		for i > 0 && dl[i] < dl[i-1] {
+			dl[i], dl[i-1] = dl[i-1], dl[i]
+			i--
+		}
+		g.dependents[dep] = dl
 		if _, exists := g.dependencies[dep]; !exists {
 			g.dependencies[dep] = make([]string, 0)
 		}
@@ -152,11 +161,9 @@ func (g *Graph) ExecutionLayers() ([][]string, error) {
 
 		nextLayer := make([]string, 0)
 		for _, task := range currentLayer {
-			deps := make([]string, len(g.dependents[task]))
-			copy(deps, g.dependents[task])
-			sort.Strings(deps)
-
-			for _, dependent := range deps {
+			// dependents[task] is already sorted (maintained by AddTask),
+			// so no per-task copy or sort is needed here.
+			for _, dependent := range g.dependents[task] {
 				indegree[dependent]--
 				if indegree[dependent] == 0 {
 					nextLayer = append(nextLayer, dependent)
