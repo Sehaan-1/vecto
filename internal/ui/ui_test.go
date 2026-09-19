@@ -2,6 +2,7 @@ package ui_test
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -43,5 +44,20 @@ func TestUI_ConcurrentReporting(t *testing.T) {
 	}
 	if !strings.Contains(output, "CACHED") {
 		t.Errorf("expected CACHED in output, got:\n%s", output)
+	}
+}
+
+func TestUI_TaskFailedShowsOutput(t *testing.T) {
+	buf := &bytes.Buffer{}
+	reporter := ui.NewReporter(buf, false)
+
+	reporter.RegisterTasks([]string{"compile"})
+	reporter.TaskStarted("compile")
+	compilerOutput := []byte("main.go:14: syntax error: unexpected newline")
+	reporter.TaskFailed("compile", errors.New("exit status 1"), compilerOutput)
+
+	out := buf.String()
+	if !strings.Contains(out, "syntax error: unexpected newline") {
+		t.Errorf("expected compiler error output in UI, got:\n%s", out)
 	}
 }

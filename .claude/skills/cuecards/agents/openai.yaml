@@ -1,5 +1,0 @@
-interface:
-  display_name: "Cuecards"
-  short_description: "Lay a fuzzy effort out as choice cards, ADRs, and a handoff"
-policy:
-  allow_implicit_invocation: false

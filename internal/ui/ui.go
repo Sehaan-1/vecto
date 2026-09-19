@@ -74,9 +74,7 @@ func (r *Reporter) TaskStarted(name string) {
 		t.Status = StatusRunning
 		t.StartTime = time.Now()
 	}
-	if !r.isTTY {
-		fmt.Fprintf(r.writer, "[-] %s ... running\n", name)
-	}
+	fmt.Fprintf(r.writer, "[-] %s ... running\n", name)
 }
 
 // TaskCompleted marks a task as successfully finished.
@@ -101,8 +99,8 @@ func (r *Reporter) TaskCached(name string) {
 	fmt.Fprintf(r.writer, "[⚡ CACHED] %s (0.00s)\n", name)
 }
 
-// TaskFailed marks a task as failed with an error.
-func (r *Reporter) TaskFailed(name string, err error) {
+// TaskFailed marks a task as failed with an error and prints command output.
+func (r *Reporter) TaskFailed(name string, err error, output []byte) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if t, ok := r.tasks[name]; ok {
@@ -110,6 +108,9 @@ func (r *Reporter) TaskFailed(name string, err error) {
 		t.Err = err
 	}
 	fmt.Fprintf(r.writer, "[✗ FAILED] %s: %v\n", name, err)
+	if len(output) > 0 {
+		fmt.Fprintf(r.writer, "\n--- Output: %s ---\n%s--------------------\n\n", name, string(output))
+	}
 }
 
 // TaskSkipped marks a task as skipped due to upstream failure.

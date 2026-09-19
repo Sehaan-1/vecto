@@ -14,14 +14,14 @@ When executing 4 or 8 tasks concurrently, terminal output can easily collide. We
 3. Completely quiet summaries writing logs only to files.
 
 ## Decision
-The terminal displays a dynamic, in-place updating status dashboard with task spinners and elapsed time, gracefully falling back to clean line-by-line streaming in non-interactive CI environments.
+The terminal displays structured status rows per task (`[-] ... running`, `[✓] ... duration`, `[⚡ CACHED] 0.00s`), capturing output and cleanly printing full command stdout/stderr only on task failure.
 
 ## Consequences
 What this means from now on:
-- **People notice:** Snappy, high-polish developer feedback with zero visual flicker and clean failure reporting.
+- **People notice:** Snappy developer feedback with immediate visibility of task start, completion, cache hits, and compiler error dumps on failure.
 - **Later cards/ADRs must:** Route task stdout/stderr through thread-safe buffers in `internal/ui`.
 - **We give up:** Direct raw unbounded dumping of child process stdout straight to the OS terminal handle.
-- **Look/CI/proof:** Validated by `internal/ui` interactive and non-interactive TTY unit tests.
+- **Look/CI/proof:** Validated by `internal/ui` unit tests verifying thread-safe reporting and error output capture.
 
 ## History
 - 2026-09-20 accepted

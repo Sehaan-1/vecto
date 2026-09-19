@@ -73,7 +73,7 @@ func TestRunner_ConcurrentAndCacheHit(t *testing.T) {
 		t.Fatalf("expected all tasks CACHED in second run, got:\n%s", out2)
 	}
 
-	// Must replay instantly (< 50ms per destination criteria)
+	// Must replay instantly (< 200ms)
 	if hotDuration > 200*time.Millisecond {
 		t.Errorf("hot cache replay took too long: %v", hotDuration)
 	}
@@ -127,5 +127,68 @@ func TestRunner_FailFastAndKeepGoing(t *testing.T) {
 	}
 	if !strings.Contains(out, "[✓] independent_task") {
 		t.Errorf("expected independent_task to complete under keep-going, got:\n%s", out)
+	}
+}
+
+func TestRunner_TransitiveSkip_MultiLevel(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// A -> B -> C (multi-level chain)
+	// D is independent
+	cfg := &config.Config{
+		Version: "1",
+		Tasks: map[string]config.TaskConfig{
+			"A_fail": {
+				Command: "non_existent_cmd_fail_abc",
+			},
+			"B_dep": {
+				Command:      "echo B",
+				Dependencies: []string{"A_fail"},
+			},
+			"C_deep_dep": {
+				Command:      "echo C",
+				Dependencies: []string{"B_dep"},
+			},
+			"D_independent": {
+				Command: "echo D",
+			},
+		},
+	}
+
+	g := dag.New()
+	for name, task := range cfg.Tasks {
+		g.AddTask(name, task.Dependencies)
+	}
+
+	cacheMgr := cache.New(tempDir)
+
+	buf := &bytes.Buffer{}
+	reporter := ui.NewReporter(buf, false)
+	r := runner.New(cfg, g, cacheMgr, reporter, tempDir, runner.Options{
+		Concurrency: 2,
+		KeepGoing:   true,
+	})
+
+	err := r.Run(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected failure")
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "[✗ FAILED] A_fail") {
+		t.Errorf("expected A_fail to fail, got:\n%s", out)
+	}
+	if !strings.Contains(out, "[○ SKIPPED] B_dep") {
+		t.Errorf("expected B_dep to be skipped, got:\n%s", out)
+	}
+	// CRITICAL TEST: C depends on B (which was skipped, not failed). C MUST BE SKIPPED!
+	if !strings.Contains(out, "[○ SKIPPED] C_deep_dep") {
+		t.Errorf("BUG DETECTED: C_deep_dep was not skipped when upstream B was skipped! Got:\n%s", out)
+	}
+	if strings.Contains(out, "[✓] C_deep_dep") {
+		t.Errorf("FATAL BUG: C_deep_dep executed even though its dependency was skipped! Got:\n%s", out)
+	}
+	if !strings.Contains(out, "[✓] D_independent") {
+		t.Errorf("expected D_independent to succeed under keep-going, got:\n%s", out)
 	}
 }

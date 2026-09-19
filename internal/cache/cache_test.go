@@ -3,6 +3,7 @@ package cache_test
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -17,7 +18,7 @@ func TestCache_StoreAndRestore(t *testing.T) {
 	taskName := "compile"
 	outputLog := []byte("compiling main.go... done!\n")
 
-	// Create an artifact file
+	// Create an artifact file with executable permissions
 	artifactRel := filepath.Join("dist", "binary.bin")
 	artifactFull := filepath.Join(tempDir, artifactRel)
 	if err := os.MkdirAll(filepath.Dir(artifactFull), 0755); err != nil {
@@ -64,5 +65,16 @@ func TestCache_StoreAndRestore(t *testing.T) {
 	}
 	if string(restoredData) != "BINARY_DATA_PAYLOAD" {
 		t.Errorf("restored artifact content mismatch")
+	}
+
+	// Verify permissions restored (on Unix)
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(artifactFull)
+		if err != nil {
+			t.Fatalf("stat failed: %v", err)
+		}
+		if info.Mode().Perm()&0111 == 0 {
+			t.Errorf("executable permissions were lost on cache restore: mode is %v", info.Mode())
+		}
 	}
 }

@@ -1,6 +1,7 @@
 package dag_test
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -66,5 +67,47 @@ func TestDAG_CycleDetection(t *testing.T) {
 
 	if !strings.Contains(err.Error(), "cycle detected") {
 		t.Errorf("expected cycle error message, got: %v", err)
+	}
+}
+
+func build1000NodeGraph() *dag.Graph {
+	g := dag.New()
+	// Build a 100-layer by 10-width grid graph with cross-dependencies
+	for layer := 0; layer < 100; layer++ {
+		for width := 0; width < 10; width++ {
+			nodeName := fmt.Sprintf("node_L%d_W%d", layer, width)
+			var deps []string
+			if layer > 0 {
+				// Depends on node directly above and diagonal
+				deps = append(deps, fmt.Sprintf("node_L%d_W%d", layer-1, width))
+				if width > 0 {
+					deps = append(deps, fmt.Sprintf("node_L%d_W%d", layer-1, width-1))
+				}
+			}
+			g.AddTask(nodeName, deps)
+		}
+	}
+	return g
+}
+
+func BenchmarkDAG_1000Nodes_TopologicalSort(b *testing.B) {
+	g := build1000NodeGraph()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := g.TopologicalSort()
+		if err != nil {
+			b.Fatalf("sort failed: %v", err)
+		}
+	}
+}
+
+func BenchmarkDAG_1000Nodes_ExecutionLayers(b *testing.B) {
+	g := build1000NodeGraph()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := g.ExecutionLayers()
+		if err != nil {
+			b.Fatalf("layers failed: %v", err)
+		}
 	}
 }

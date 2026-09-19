@@ -1,5 +1,0 @@
-interface:
-  display_name: "Lanes"
-  short_description: "Ship the whole destination with a committed map and parallel lanes"
-policy:
-  allow_implicit_invocation: false

@@ -77,6 +77,8 @@ func (r *Runner) Run(ctx context.Context, targetTasks []string) error {
 	defer cancel()
 
 	failedTasks := make(map[string]error)
+	unmetTasks := make(map[string]bool)
+	taskFingerprints := make(map[string]string)
 	var mu sync.Mutex
 
 	for _, layer := range layers {
@@ -92,24 +94,24 @@ func (r *Runner) Run(ctx context.Context, targetTasks []string) error {
 			continue
 		}
 
-		// Check if any dependencies of this layer failed
+		// Check if any dependencies of this layer failed or were skipped
 		var toRun []string
 		for _, taskName := range activeInLayer {
 			mu.Lock()
-			hasFailedDep := false
+			hasUnmetDep := false
 			for _, dep := range r.Config.Tasks[taskName].Dependencies {
-				if _, failed := failedTasks[dep]; failed {
-					hasFailedDep = true
+				if unmetTasks[dep] {
+					hasUnmetDep = true
 					break
 				}
 			}
-			mu.Unlock()
-
-			if hasFailedDep {
+			if hasUnmetDep {
+				unmetTasks[taskName] = true
 				r.Reporter.TaskSkipped(taskName)
 			} else {
 				toRun = append(toRun, taskName)
 			}
+			mu.Unlock()
 		}
 
 		if len(toRun) == 0 {
@@ -129,24 +131,42 @@ func (r *Runner) Run(ctx context.Context, targetTasks []string) error {
 
 				// If context was cancelled by a sibling and not keep-going, skip
 				if runCtx.Err() != nil && !r.Opts.KeepGoing {
+					mu.Lock()
+					unmetTasks[name] = true
+					mu.Unlock()
 					r.Reporter.TaskSkipped(name)
 					return
 				}
 
 				taskCfg := r.Config.Tasks[name]
 
+				// Transitive dependency fingerprints
+				depFingerprints := make(map[string]string)
+				mu.Lock()
+				for _, dep := range taskCfg.Dependencies {
+					if fp, ok := taskFingerprints[dep]; ok {
+						depFingerprints[dep] = fp
+					}
+				}
+				mu.Unlock()
+
 				// Compute cache fingerprint
-				fingerprint, err := hash.ComputeTaskFingerprint(r.BaseDir, taskCfg.Command, taskCfg.Inputs, taskCfg.Env)
+				fingerprint, err := hash.ComputeTaskFingerprint(r.BaseDir, taskCfg.Command, taskCfg.Inputs, taskCfg.Env, depFingerprints)
 				if err != nil {
 					mu.Lock()
 					failedTasks[name] = err
+					unmetTasks[name] = true
 					mu.Unlock()
-					r.Reporter.TaskFailed(name, fmt.Errorf("fingerprint error: %w", err))
+					r.Reporter.TaskFailed(name, fmt.Errorf("fingerprint error: %w", err), nil)
 					if !r.Opts.KeepGoing {
 						cancel()
 					}
 					return
 				}
+
+				mu.Lock()
+				taskFingerprints[name] = fingerprint
+				mu.Unlock()
 
 				// Check cache hit
 				if !r.Opts.Force && r.Cache.Has(fingerprint) {
@@ -167,8 +187,9 @@ func (r *Runner) Run(ctx context.Context, targetTasks []string) error {
 				if execErr != nil {
 					mu.Lock()
 					failedTasks[name] = execErr
+					unmetTasks[name] = true
 					mu.Unlock()
-					r.Reporter.TaskFailed(name, execErr)
+					r.Reporter.TaskFailed(name, execErr, output)
 					if !r.Opts.KeepGoing {
 						cancel()
 					}
