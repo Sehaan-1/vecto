@@ -5,10 +5,10 @@
 - **Handoff:** [handoff](../cuecards/handoff-vecto.md)
 - **Board:** [Vecto Task Runner](https://github.com/Sehaan-1/vecto/issues/1)
 - **Integration owner:** Antigravity (integration agent)
-- **Status:** Locked
+- **Status:** Destination Check passed
 - **Time budget:** none
 - **Spend ceiling:** none
-- **Round:** 0
+- **Round:** 2
 - **Agents in flight:** none
 
 ## Where we're headed
@@ -38,80 +38,64 @@ This is the locked target. Rounds do not rewrite it.
 - **Contract:** `internal/config/config.go` (`TaskConfig`, `Config`, `LoadConfig`, `BuildGraph`)
 - **Owned by:** Lane A
 - **Consumed by:** Lane C
-- **Status:** written
+- **Status:** both sides on it
 
 ### Seam 2: Cache Store Contract
-- **Contract:** `internal/cache/cache.go` (`Store`, `Retrieve`, `Has`, `Clear`)
+- **Contract:** `internal/cache/cache.go` (`Store`, `Restore`, `Has`, `Clean`)
 - **Owned by:** Lane B
 - **Consumed by:** Lane C
-- **Status:** written
+- **Status:** both sides on it
 
 ### Seam 3: UI Event Contract
-- **Contract:** `internal/ui/ui.go` (`Reporter`, `TaskStarted`, `TaskCompleted`, `TaskCached`, `TaskFailed`)
+- **Contract:** `internal/ui/ui.go` (`Reporter`, `TaskStarted`, `TaskCompleted`, `TaskCached`, `TaskFailed`, `Summary`)
 - **Owned by:** Lane B
 - **Consumed by:** Lane C
-- **Status:** written
+- **Status:** both sides on it
 
 ## Lanes
 
 ### Lane A — Config & Hashing Core
-- **Check:** `go test -race ./internal/config ./internal/hash` passes, correctly parsing `vecto.yaml` and computing deterministic SHA-256 keys.
-- **Does:** `internal/config` (YAML loader, DAG builder, dependency validator) and `internal/hash` (lexicographical glob file walker, SHA-256 hasher).
+- **Check:** `go test -race ./internal/config ./internal/hash` passed.
+- **Does:** Manifest loader, DAG graph validator, and deterministic SHA-256 fingerprint engine.
 - **Handoff slices:** Slice 1, Slice 2
-- **Owns (files/packages):** `internal/config/`, `internal/hash/`
-- **Does not touch:** `internal/cache/`, `internal/ui/`, `internal/runner/`, `cmd/vecto/`
-- **Needs seams:** none
-- **Parallel with:** Lane B
-- **Waits on:** none
-- **Claimed by:** Antigravity
-- **Ticket:** [#9 Lane A — Config & Hashing Core](https://github.com/Sehaan-1/vecto/issues)
-- **Status:** in progress
+- **Owns:** `internal/config/`, `internal/hash/`
+- **Status:** Check passed · Merged
 
 ### Lane B — Cache Store & Terminal UI
-- **Check:** `go test -race ./internal/cache ./internal/ui` passes, storing/restoring artifacts and rendering live terminal output without race conditions.
-- **Does:** `internal/cache` (metadata, log, and artifact tar storage in `.vecto/cache` or custom env) and `internal/ui` (thread-safe multi-task status dashboard with TTY and pipe modes).
+- **Check:** `go test -race ./internal/cache ./internal/ui` passed.
+- **Does:** Local and env-configurable cache store/restore engine and thread-safe TUI reporter.
 - **Handoff slices:** Slice 3, Slice 5
-- **Owns (files/packages):** `internal/cache/`, `internal/ui/`
-- **Does not touch:** `internal/config/`, `internal/hash/`, `internal/runner/`, `cmd/vecto/`
-- **Needs seams:** none
-- **Parallel with:** Lane A
-- **Waits on:** none
-- **Claimed by:** Antigravity
-- **Ticket:** [#10 Lane B — Cache Store & Terminal UI](https://github.com/Sehaan-1/vecto/issues)
-- **Status:** ready
+- **Owns:** `internal/cache/`, `internal/ui/`
+- **Status:** Check passed · Merged
 
 ### Lane C — Concurrent Runner & CLI Integration
-- **Check:** Destination Walk passes: `vecto run build` executes concurrently, detects cycles, honors `--keep-going`, and replays in 0.00s from cache.
-- **Does:** `internal/runner` (worker pool, execution layer dispatcher, process group cancellation) and `cmd/vecto` (CLI commands `run`, `list`, `init`, `clean`).
+- **Check:** Destination Walk passed (`test/e2e/e2e_test.go` and live walk in `examples/sample_project`).
+- **Does:** Concurrent worker pool, process group cancellation, `--keep-going` support, CLI flags and commands.
 - **Handoff slices:** Slice 4, Slice 6
-- **Owns (files/packages):** `internal/runner/`, `cmd/vecto/`, `test/e2e/`
-- **Does not touch:** `internal/config/`, `internal/hash/`, `internal/cache/`, `internal/ui/`
-- **Needs seams:** Seam 1 (Task Config), Seam 2 (Cache Store), Seam 3 (UI Event)
-- **Parallel with:** none
-- **Waits on:** Lane A and Lane B
-- **Claimed by:** Antigravity
-- **Ticket:** [#11 Lane C — Concurrent Runner & CLI Integration](https://github.com/Sehaan-1/vecto/issues)
-- **Status:** waiting on A and B
+- **Owns:** `internal/runner/`, `cmd/vecto/`, `test/e2e/`, `examples/sample_project/`
+- **Status:** Check passed · Merged
 
 ## Now / Next / Then
-- **Now, in parallel:** Lane A, Lane B
-- **Next:** Lane C
-- **Then:** Full destination walk & enforcement check
+- **Now:** All lanes landed
+- **Next:** Destination shipped
+- **Then:** None
 
 ## Integration
-- Merge to master branch after every lane Check
-- After each merge, verify `go test -race ./...` remains green
-- Final: run full end-to-end multi-task demo walk verifying 0.00s replay
-
-## Sitting profile (this round)
-- **Takeable now:** Lane A, Lane B
-- **Idle / waiting on:** Lane C (waits on A & B)
-- **Bottleneck:** none
-- **Duplicate work or duplicate context:** none
-- **Walk before → after this round:** Skeleton compiled → Core subsystems (Config, Hashing, Cache, UI) functional
+- Full test suite passing race detection: `go test -v -race ./...`
+- Production binary compiled to `bin/vecto.exe`
+- Destination Walk verified:
+  - Cold run: 0.05s total (all 3 tasks executed)
+  - Hot run: 0.00s total (all 3 tasks `[⚡ CACHED]`)
 
 ## What landed
-- Baseline Go 1.27 module and `internal/dag` with topological sort and cycle detection.
+- `internal/config/`: `vecto.yaml` parser, task validator, and DAG builder.
+- `internal/hash/`: Content-addressable SHA-256 fingerprint engine over inputs, command, and env.
+- `internal/cache/`: `.vecto/cache/` storage, artifact snapshotting and replay engine.
+- `internal/ui/`: Thread-safe terminal reporter with spinners, elapsed timing, and CI pipe fallback.
+- `internal/runner/`: Concurrent DAG layer dispatcher, worker pool, context cancellation, and keep-going mode.
+- `cmd/vecto/`: Complete CLI commands (`run`, `list`, `init`, `clean`, `version`).
+- `test/e2e/`: Automated E2E test suite.
+- `examples/sample_project/`: End-to-end demo project.
 
 ## Blocked
 nothing

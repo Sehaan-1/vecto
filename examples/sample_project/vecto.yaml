@@ -1,0 +1,16 @@
+version: "1"
+
+tasks:
+  codegen:
+    command: "echo [codegen] Generating code from schema..."
+    inputs: ["schema.json"]
+
+  lint:
+    command: "echo [lint] Analyzing source files..."
+    inputs: ["src/*.txt"]
+
+  build:
+    command: "echo [build] Linking artifacts into dist/app.bundle"
+    deps: ["codegen", "lint"]
+    inputs: ["src/*.txt"]
+    outputs: ["dist/app.bundle"]
