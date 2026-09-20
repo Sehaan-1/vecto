@@ -342,3 +342,103 @@ func TestBenchmark_FailureTeardown(t *testing.T) {
 		t.Errorf("Fail-fast teardown took suspiciously long: %v", fastDuration)
 	}
 }
+
+// runExternal measures one external runner invocation in dir and returns its
+// wall-clock time and combined output. It fails the test on non-zero exit.
+func runExternal(t *testing.T, dir, name string, args ...string) (time.Duration, string) {
+	t.Helper()
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	start := time.Now()
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("%s %v failed: %v\n%s", name, args, err, buf.String())
+	}
+	return time.Since(start), buf.String()
+}
+
+func gitInit(t *testing.T, dir string) {
+	t.Helper()
+	// Caches, outputs, and interpreter bytecode stay untracked: turbo hashes
+	// tracked files, so anything a run rewrites (including .pyc files python
+	// emits on every run) would churn hashes and defeat the cache forever.
+	ignore := ".turbo/\n.vecto/\ndist/\ngenerated/\n__pycache__/\n*.pyc\n"
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(ignore), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"add", "-A"},
+		{"-c", "user.email=bench@local", "-c", "user.name=bench", "commit", "-qm", "bench"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+}
+
+// TestBenchmark_ExternalRunners measures the same multi-language project
+// under Turbo (caching rival) and Just (plain runner) for docs/benchmarks.md.
+// It skips — never fails — when a tool is not installed, so CI stays green
+// without external dependencies (ADR-0015).
+func TestBenchmark_ExternalRunners(t *testing.T) {
+	multiLangSrc, err := filepath.Abs("multi_lang_project")
+	if err != nil {
+		t.Fatalf("could not locate multi_lang_project: %v", err)
+	}
+
+	if _, err := exec.LookPath("turbo"); err != nil {
+		t.Skip("turbo not on PATH, skipping rival measurement")
+	}
+	if _, err := exec.LookPath("just"); err != nil {
+		t.Skip("just not on PATH, skipping rival measurement")
+	}
+	if runtime.GOOS == "windows" {
+		if _, err := exec.LookPath("sh"); err != nil {
+			t.Skip("sh not on PATH (just needs it on Windows), skipping")
+		}
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH (turbo hashes via git), skipping")
+	}
+
+	tempDir := t.TempDir()
+
+	// Turbo workspace: turbo hashes git-tracked files, so the copy must be
+	// a clean repo with caches and outputs untracked (else hashes churn and
+	// nothing ever hits cache).
+	turboDir := filepath.Join(tempDir, "turbo")
+	if err := copyDir(multiLangSrc, turboDir); err != nil {
+		t.Fatal(err)
+	}
+	gitInit(t, turboDir)
+
+	turboCold, _ := runExternal(t, turboDir, "turbo", "run", "package", "--output-logs=errors-only")
+	_ = turboCold
+	turboHot, hotOut := runExternal(t, turboDir, "turbo", "run", "package", "--output-logs=errors-only")
+	if !strings.Contains(hotOut, "FULL TURBO") {
+		t.Fatalf("expected turbo full cache hit, got:\n%s", hotOut)
+	}
+	fmt.Printf("--- External runners (same project, same machine) ---\n")
+	fmt.Printf("Turbo cold:      %v\n", turboCold)
+	fmt.Printf("Turbo hot replay: %v (FULL TURBO)\n", turboHot)
+
+	// Just workspace: no cache, so one run shows the re-execution baseline.
+	justDir := filepath.Join(tempDir, "just")
+	if err := copyDir(multiLangSrc, justDir); err != nil {
+		t.Fatal(err)
+	}
+	justCold, _ := runExternal(t, justDir, "just", "package")
+	justRerun, _ := runExternal(t, justDir, "just", "package")
+	fmt.Printf("Just cold:       %v\n", justCold)
+	fmt.Printf("Just rerun:      %v (no cache, re-executes)\n\n", justRerun)
+
+	manifest := filepath.Join(justDir, "dist", "release.manifest")
+	if _, err := os.Stat(manifest); err != nil {
+		t.Fatalf("just run did not produce %s: %v", manifest, err)
+	}
+}

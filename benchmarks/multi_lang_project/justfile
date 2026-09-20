@@ -1,0 +1,20 @@
+package: build-go build-web test-py
+	python scripts/package_release.py
+
+build-go: test-go
+	go run services/api/main.go build
+
+build-web: test-web
+	python scripts/build_bundle.py
+
+test-go: codegen
+	go test ./services/api/...
+
+test-py:
+	python scripts/test_processor.py
+
+test-web:
+	node web/index.test.js
+
+codegen:
+	python scripts/generate_routes.py

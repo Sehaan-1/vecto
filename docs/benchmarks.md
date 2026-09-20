@@ -27,6 +27,10 @@ This document records empirical performance benchmarks comparing **Vecto** again
 | **Hot Replay (0 files modified)** | `773 ms` | `17.5 ms` | **44.2x faster** (sub-20ms content-addressed replay) |
 | **Parallel Cold Build (`make -j`)** | `1.06s` | `1.18s` | **0.90x** (within 120ms of Make -j while providing caching) |
 
+> **Reading the Hot Replay row honestly:** GNU Make keeps no cache, so a
+> replay comparison against it flatters any caching runner. The fair fight
+> is cacher vs cacher — see section 6 for Turbo measured on the same project.
+
 ---
 
 ## 2. Cache Hit Latency Distribution
@@ -86,3 +90,45 @@ go test -v ./benchmarks -run 'TestBenchmark_(Scalability|FailureTeardown)'
 # Run all internal Go benchmarks with memory allocation profiling
 go test -run='^$' -bench=. -benchmem ./...
 ```
+
+---
+
+## 6. Same-Machine Runner Comparison (Vecto vs Turbo vs Just vs Make)
+
+Same project (`benchmarks/multi_lang_project/`), same machine, each runner on a
+fresh copy. Turbo and Just run the equivalent task graph defined in
+`turbo.json`/`package.json` and `justfile`; Make uses the existing `Makefile`.
+
+### Test Environment
+- **OS:** Windows 11 (amd64)
+- **CPU:** 13th Gen Intel(R) Core(TM) i7-1355U
+- **Runtimes:** Go 1.27.0, Python 3.11.9, Node.js v24.15.0
+- **Runners:** Vecto (this repo), Turbo 2.11.2 (`turbo` global install), Just 1.58.0, GNU Make (`mingw32-make`)
+- **Date:** 2026-09-20
+
+### Results
+
+| Runner | Cold Build | Second Run (0 files modified) | Cache? |
+|---|---|---|---|
+| **Vecto** | `7.5s` | `0.09s` (7/7 cached) | content-hash |
+| **Turbo** | `4.9s` | `0.44s` wall, `92ms` tasks (7/7 FULL TURBO) | content-hash |
+| **Just** | `6.6s` | `3.6s` (re-executes everything) | none |
+| **Make** | `5.8s` | `3.1s` (re-executes everything) | none |
+
+### How to read this
+- **Cold is toolchain-dominated** (Go test compilation alone is ~4s here) and all
+  runners share the warm Go module cache, so cold gaps say little. The
+  meaningful column is the second run.
+- **Cacher vs cacher is sub-second on both sides.** Vecto restores faster here;
+  Turbo pays daemon + archive overhead. No 44x-style headline — that number only
+  ever existed against cache-less Make.
+- **Just and Make re-execute** (only Go's own test cache shortcuts one step),
+  which is exactly the pain caching runners remove.
+
+### Reproduce
+```bash
+go test -v ./benchmarks -run TestBenchmark_ExternalRunners
+```
+Requires `turbo`, `just` (plus `sh` on Windows), and `git` on PATH; the test
+skips cleanly when any is missing. Turbo hashes git-tracked files, so the test
+initializes a scratch repo with caches, outputs, and Python bytecode untracked.

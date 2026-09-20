@@ -1,0 +1,15 @@
+{
+  "name": "vecto-multi-lang-bench",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "npm@11.12.1",
+  "scripts": {
+    "codegen": "python scripts/generate_routes.py",
+    "test-go": "go test ./services/api/...",
+    "test-py": "python scripts/test_processor.py",
+    "test-web": "node web/index.test.js",
+    "build-go": "go run services/api/main.go build",
+    "build-web": "python scripts/build_bundle.py",
+    "package": "python scripts/package_release.py"
+  }
+}

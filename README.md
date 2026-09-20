@@ -38,6 +38,8 @@ The following benchmarks were measured on a 13th Gen Intel Core i7-1355U (12 thr
 | **Hot Replay (0 files modified)** | `773 ms` | `17.5 ms` | **44.2x faster** (content-addressed cache hit) |
 | **Parallel Cold Build (`make -j`)** | `1.06s` | `1.18s` | **0.90x** (within 120ms of Make `-j`, with caching enabled) |
 
+Hot replay vs Make flatters any cacher since Make keeps no cache. Same-machine numbers against Turbo (caching) and Just are in [`docs/benchmarks.md`](docs/benchmarks.md#6-same-machine-runner-comparison-vecto-vs-turbo-vs-just-vs-make).
+
 ### Micro-Benchmarks & Latency
 
 | Benchmark | Latency / Throughput | Notes |

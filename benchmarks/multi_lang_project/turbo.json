@@ -1,0 +1,25 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "tasks": {
+    "codegen": {
+      "outputs": ["generated/**"]
+    },
+    "test-go": {
+      "dependsOn": ["codegen"]
+    },
+    "test-py": {},
+    "test-web": {},
+    "build-go": {
+      "dependsOn": ["test-go"],
+      "outputs": ["dist/**"]
+    },
+    "build-web": {
+      "dependsOn": ["test-web"],
+      "outputs": ["dist/**"]
+    },
+    "package": {
+      "dependsOn": ["build-go", "build-web", "test-py"],
+      "outputs": ["dist/**"]
+    }
+  }
+}
