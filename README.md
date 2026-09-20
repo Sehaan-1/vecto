@@ -126,7 +126,14 @@ When a task fails or the run context is cancelled:
 
 ## Quickstart
 
-### 1. Build from Source
+### 1. Install
+```bash
+go install github.com/Sehaan-1/vecto/cmd/vecto@latest
+```
+
+Prebuilt binaries for Windows, macOS, and Linux are attached to each git tag via GoReleaser (see `.goreleaser.yml`).
+
+### 2. Build from Source
 ```bash
 git clone https://github.com/Sehaan-1/vecto.git
 cd vecto
