@@ -270,7 +270,10 @@ func TestIncrementalConvergesToFull(t *testing.T) {
 	}
 	for i, s := range steps {
 		inc.Snapshot = time.Now().Add(-2 * time.Second)
-		mustWrite(t, filepath.Join(dir, s.rel), s.content)
+		p := filepath.Join(dir, s.rel)
+		mustWrite(t, p, s.content)
+		mt := time.Now().Add(time.Duration(i+1) * time.Second)
+		_ = os.Chtimes(p, mt, mt)
 		if _, err := inc.Sync(dir, ignoresFor(dir), 4); err != nil {
 			t.Fatalf("incremental sync %d: %v", i, err)
 		}

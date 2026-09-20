@@ -348,9 +348,7 @@ func (r *Runner) runTask(
 // change what a fingerprint *is*.
 func (r *Runner) indexedFingerprint(name, cmd string, taskCfg config.TaskConfig, depFingerprints map[string]string, mu *sync.Mutex) (string, error) {
 	depNames := make([]string, 0, len(taskCfg.Dependencies))
-	for _, d := range taskCfg.Dependencies {
-		depNames = append(depNames, d)
-	}
+	depNames = append(depNames, taskCfg.Dependencies...)
 	def := fileindex.DefHash(cmd, taskCfg.Inputs, taskCfg.Env, depNames)
 
 	mu.Lock()
