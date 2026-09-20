@@ -30,10 +30,6 @@ func TestColdThenWarmSync(t *testing.T) {
 	mustWrite(t, filepath.Join(dir, "a", "one.txt"), "1")
 	mustWrite(t, filepath.Join(dir, "a", "b", "two.txt"), "22")
 	mustWrite(t, filepath.Join(dir, "c", "three.txt"), "333")
-	// Files must predate the cold snapshot by more than 1 second, otherwise
-	// the racy rule (same-second stats are untrusted) re-hashes them once.
-	time.Sleep(1100 * time.Millisecond)
-
 	ix := New()
 	rep1, err := ix.Sync(dir, ignoresFor(dir), 4)
 	if err != nil {
@@ -47,9 +43,8 @@ func TestColdThenWarmSync(t *testing.T) {
 		t.Fatal("empty root hash")
 	}
 
-	// Pass the 1-second racy window: files created in the same second as the
-	// last snapshot are deliberately re-hashed once (git racy-git rule).
-	time.Sleep(1100 * time.Millisecond)
+	// Back-date the snapshot to avoid the 1-second racy window deterministically.
+	ix.Snapshot = time.Now().Add(-2 * time.Second)
 
 	ix2 := New()
 	ix2.RootHash = root1
@@ -75,9 +70,6 @@ func TestEditRehashesOnlyEditedFile(t *testing.T) {
 	mustWrite(t, filepath.Join(dir, "x", "y", "z", "deep.txt"), "deep")
 	mustWrite(t, filepath.Join(dir, "x", "other.txt"), "other")
 	mustWrite(t, filepath.Join(dir, "sibling", "s1.txt"), "s1")
-	// Out of the 1-second racy window before the cold snapshot.
-	time.Sleep(1100 * time.Millisecond)
-
 	ix := New()
 	if _, err := ix.Sync(dir, ignoresFor(dir), 4); err != nil {
 		t.Fatal(err)
@@ -85,9 +77,8 @@ func TestEditRehashesOnlyEditedFile(t *testing.T) {
 	rootBefore := ix.RootHash
 	siblingBefore := ix.Nodes["sibling"].Hash
 
-	// Sleep past the second boundary so the edit is not "racy" for the
-	// previous snapshot, then edit.
-	time.Sleep(1100 * time.Millisecond)
+	// Back-date the snapshot so the edit is not "racy" for the previous snapshot.
+	ix.Snapshot = time.Now().Add(-2 * time.Second)
 	mustWrite(t, filepath.Join(dir, "x", "y", "z", "deep.txt"), "deep-edited")
 
 	rep, err := ix.Sync(dir, ignoresFor(dir), 4)
@@ -123,7 +114,7 @@ func TestContentRestoreConverges(t *testing.T) {
 	rootOriginal := ix.RootHash
 	fileHashOriginal := ix.Nodes["f.txt"].Hash
 
-	time.Sleep(1100 * time.Millisecond)
+	ix.Snapshot = time.Now().Add(-2 * time.Second)
 	mustWrite(t, filepath.Join(dir, "f.txt"), "changed")
 	if _, err := ix.Sync(dir, ignoresFor(dir), 4); err != nil {
 		t.Fatal(err)
@@ -132,7 +123,7 @@ func TestContentRestoreConverges(t *testing.T) {
 		t.Fatal("edit not detected")
 	}
 
-	time.Sleep(1100 * time.Millisecond)
+	ix.Snapshot = time.Now().Add(-2 * time.Second)
 	mustWrite(t, filepath.Join(dir, "f.txt"), "original")
 	if _, err := ix.Sync(dir, ignoresFor(dir), 4); err != nil {
 		t.Fatal(err)
@@ -159,7 +150,7 @@ func TestAddDeleteRename(t *testing.T) {
 	root0 := ix.RootHash
 
 	// Add.
-	time.Sleep(1100 * time.Millisecond)
+	ix.Snapshot = time.Now().Add(-2 * time.Second)
 	mustWrite(t, filepath.Join(dir, "c.txt"), "C")
 	if _, err := ix.Sync(dir, ignoresFor(dir), 4); err != nil {
 		t.Fatal(err)
@@ -169,7 +160,7 @@ func TestAddDeleteRename(t *testing.T) {
 	}
 
 	// Delete.
-	time.Sleep(1100 * time.Millisecond)
+	ix.Snapshot = time.Now().Add(-2 * time.Second)
 	if err := os.Remove(filepath.Join(dir, "c.txt")); err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +172,7 @@ func TestAddDeleteRename(t *testing.T) {
 	}
 
 	// Rename.
-	time.Sleep(1100 * time.Millisecond)
+	ix.Snapshot = time.Now().Add(-2 * time.Second)
 	if err := os.Rename(filepath.Join(dir, "a.txt"), filepath.Join(dir, "renamed.txt")); err != nil {
 		t.Fatal(err)
 	}
@@ -227,9 +218,6 @@ func TestSymlinkAlwaysRehashed(t *testing.T) {
 	if err := os.Symlink(filepath.Join(dir, "target.txt"), filepath.Join(dir, "link.txt")); err != nil {
 		t.Skipf("symlinks unsupported here: %v", err)
 	}
-	// Out of the 1-second racy window before the cold snapshot.
-	time.Sleep(1100 * time.Millisecond)
-
 	ix := New()
 	if _, err := ix.Sync(dir, ignoresFor(dir), 4); err != nil {
 		t.Fatal(err)
@@ -237,7 +225,7 @@ func TestSymlinkAlwaysRehashed(t *testing.T) {
 	root1 := ix.RootHash
 
 	// Warm sync: target untouched, but the symlink must still be re-hashed.
-	time.Sleep(1100 * time.Millisecond)
+	ix.Snapshot = time.Now().Add(-2 * time.Second)
 	rep, err := ix.Sync(dir, ignoresFor(dir), 4)
 	if err != nil {
 		t.Fatal(err)
@@ -250,7 +238,7 @@ func TestSymlinkAlwaysRehashed(t *testing.T) {
 	}
 
 	// Edit the target in place.
-	time.Sleep(1100 * time.Millisecond)
+	ix.Snapshot = time.Now().Add(-2 * time.Second)
 	mustWrite(t, filepath.Join(dir, "target.txt"), "v2")
 	if _, err := ix.Sync(dir, ignoresFor(dir), 4); err != nil {
 		t.Fatal(err)
@@ -281,14 +269,14 @@ func TestIncrementalConvergesToFull(t *testing.T) {
 		{"q/d.txt", "d2"},
 	}
 	for i, s := range steps {
-		time.Sleep(1100 * time.Millisecond)
+		inc.Snapshot = time.Now().Add(-2 * time.Second)
 		mustWrite(t, filepath.Join(dir, s.rel), s.content)
 		if _, err := inc.Sync(dir, ignoresFor(dir), 4); err != nil {
 			t.Fatalf("incremental sync %d: %v", i, err)
 		}
 	}
 	// Delete one file.
-	time.Sleep(1100 * time.Millisecond)
+	inc.Snapshot = time.Now().Add(-2 * time.Second)
 	if err := os.Remove(filepath.Join(dir, "p", "b.txt")); err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +356,7 @@ func TestCoverageCollapse(t *testing.T) {
 	}
 
 	// Unrelated edit: coverage of packages must not move.
-	time.Sleep(1100 * time.Millisecond)
+	ix.Snapshot = time.Now().Add(-2 * time.Second)
 	mustWrite(t, filepath.Join(dir, "outside", "z.txt"), "4-edited")
 	if _, err := ix.Sync(dir, ignoresFor(dir), 4); err != nil {
 		t.Fatal(err)
@@ -382,7 +370,7 @@ func TestCoverageCollapse(t *testing.T) {
 	}
 
 	// Related edit: coverage must move.
-	time.Sleep(1100 * time.Millisecond)
+	ix.Snapshot = time.Now().Add(-2 * time.Second)
 	mustWrite(t, filepath.Join(dir, "packages", "a", "x1.txt"), "1-edited")
 	if _, err := ix.Sync(dir, ignoresFor(dir), 4); err != nil {
 		t.Fatal(err)
@@ -453,20 +441,15 @@ func TestIgnoredPathsExcluded(t *testing.T) {
 func TestLoadSaveRoundtrip(t *testing.T) {
 	dir := t.TempDir()
 	mustWrite(t, filepath.Join(dir, "k", "v.txt"), "value")
-	// Predate the cold snapshot by >1s (racy window, see TestColdThenWarmSync).
-	time.Sleep(1100 * time.Millisecond)
-
 	ix := New()
 	if _, err := ix.Sync(dir, ignoresFor(dir), 4); err != nil {
 		t.Fatal(err)
 	}
 	root := ix.RootHash
+	ix.Snapshot = time.Now().Add(-2 * time.Second)
 	if err := ix.Save(dir); err != nil {
 		t.Fatal(err)
 	}
-
-	// Pass the 1-second racy window (see TestColdThenWarmSync).
-	time.Sleep(1100 * time.Millisecond)
 
 	loaded, err := Load(dir)
 	if err != nil {

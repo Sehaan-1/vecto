@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Sehaan-1/vecto/internal/cache"
@@ -47,7 +48,7 @@ type Runner struct {
 	// indexDirty marks that this run stored a new task fingerprint in the
 	// index (memoization miss) — used to decide whether the index must be
 	// persisted even when the tree root hash did not change.
-	indexDirty bool
+	indexDirty atomic.Bool
 	// indexTreeUnchanged is true when the sync produced the same root hash
 	// as the loaded index (0 stat-level changes in the tree).
 	indexTreeUnchanged bool
@@ -229,7 +230,7 @@ func (r *Runner) Run(ctx context.Context, targetTasks []string) error {
 	// and a same-second rewrite is caught by the racy rule, which compares
 	// against the retained (older) snapshot second. Best-effort: a failure
 	// here only costs the next run a cold-ish sync.
-	if r.fileIndex != nil && (!r.indexTreeUnchanged || r.indexDirty) {
+	if r.fileIndex != nil && (!r.indexTreeUnchanged || r.indexDirty.Load()) {
 		if err := r.fileIndex.Save(r.BaseDir); err != nil {
 			fmt.Fprintf(r.Reporter.Writer(), "warning: saving file index: %v\n", err)
 		}
@@ -363,7 +364,7 @@ func (r *Runner) indexedFingerprint(name, cmd string, taskCfg config.TaskConfig,
 	// Recomputing → a fresh record will be stored: mark the index dirty so
 	// it is persisted even when the tree root hash did not change (the new
 	// record is what makes the next run O(1) for this task).
-	r.indexDirty = true
+	r.indexDirty.Store(true)
 
 	coverage, _, err := r.fileIndex.Coverage(taskCfg.Inputs)
 	if err != nil {

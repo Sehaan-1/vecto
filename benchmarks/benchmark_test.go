@@ -22,12 +22,12 @@ import (
 )
 
 type BenchmarkResult struct {
-	Name        string
-	MakeTime    time.Duration
-	VectoTime   time.Duration
-	MakeOutputs string
+	Name         string
+	MakeTime     time.Duration
+	VectoTime    time.Duration
+	MakeOutputs  string
 	VectoOutputs string
-	Speedup     float64
+	Speedup      float64
 }
 
 func copyDir(src, dst string) error {

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -13,6 +14,9 @@ import (
 func buildVectoFileIndex(t *testing.T) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "vecto")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
 	// The module root is two levels up from test/e2e.
 	cmd := exec.Command("go", "build", "-o", bin, "github.com/Sehaan-1/vecto/cmd/vecto")
 	cmd.Dir = filepath.Join("..", "..")

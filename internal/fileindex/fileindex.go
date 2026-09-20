@@ -36,7 +36,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/Sehaan-1/vecto/internal/hash"
@@ -228,18 +227,6 @@ func DirNodeHash(rel string, childNames []string, childHashes []string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func statTuple(st *syscall.Stat_t) Stat {
-	return Stat{
-		Dev:    st.Dev,
-		Ino:    st.Ino,
-		CTime:  st.Ctim.Sec,
-		CNTime: st.Ctim.Nsec,
-		MTime:  st.Mtim.Sec,
-		MNTime: st.Mtim.Nsec,
-		Size:   uint64(st.Size),
-	}
-}
-
 func joinRel(dir, name string) string {
 	if dir == "" {
 		return name
@@ -377,8 +364,8 @@ func (ix *Index) Sync(baseDir string, ignores []string, workers int) (*SyncRepor
 						continue
 					}
 					absPath := filepath.Join(abs, name)
-					var st syscall.Stat_t
-					if err := syscall.Lstat(absPath, &st); err != nil {
+					st, err := rawLstat(absPath)
+					if err != nil {
 						if os.IsNotExist(err) {
 							continue
 						}
@@ -392,14 +379,14 @@ func (ix *Index) Sync(baseDir string, ignores []string, workers int) (*SyncRepor
 					}
 					if e.IsDir() {
 						ef.Lock()
-						seenDirs[relPath] = statTuple(&st)
+						seenDirs[relPath] = st
 						ef.Unlock()
 						inflight.Add(1)
 						queue <- relPath
 						continue
 					}
 					ef.Lock()
-					seenFiles[relPath] = &seenFile{st: statTuple(&st), isSymlink: e.Type()&fs.ModeSymlink != 0}
+					seenFiles[relPath] = &seenFile{st: st, isSymlink: e.Type()&fs.ModeSymlink != 0}
 					ef.Unlock()
 				}
 				inflight.Done() // this dir is fully processed (children already added)
@@ -431,6 +418,7 @@ func (ix *Index) Sync(baseDir string, ignores []string, workers int) (*SyncRepor
 		hErrs int
 		hJobs int
 	)
+	hashSem := make(chan struct{}, workers)
 	for rel, sf := range seenFiles {
 		old, exists := oldNodes[rel]
 		needsHash := false
@@ -447,8 +435,10 @@ func (ix *Index) Sync(baseDir string, ignores []string, workers int) (*SyncRepor
 		if needsHash {
 			hJobs++
 			hwg.Add(1)
+			hashSem <- struct{}{}
 			go func(rel string, st Stat) {
 				defer hwg.Done()
+				defer func() { <-hashSem }()
 				abs := filepath.Join(baseDir, rel)
 				f, err := os.Open(abs)
 				if err != nil {
@@ -616,11 +606,11 @@ func (ix *Index) Sync(baseDir string, ignores []string, workers int) (*SyncRepor
 }
 
 func rootStat(baseDir string) Stat {
-	var st syscall.Stat_t
-	if err := syscall.Lstat(baseDir, &st); err != nil {
+	st, err := rawLstat(baseDir)
+	if err != nil {
 		return Stat{}
 	}
-	return statTuple(&st)
+	return st
 }
 
 // sameSorted reports whether two sorted string slices are identical.

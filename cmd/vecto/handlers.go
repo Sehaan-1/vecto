@@ -312,6 +312,7 @@ func handleDryRun(cfg *config.Config, g *dag.Graph, cacheMgr *cache.Manager, tar
 
 	// ADR-0019: dry-run goes through the same Merkle file index as run, so
 	// the preview reflects the exact fingerprints execution will use.
+	// Sync for accurate fingerprints — but do NOT Save; dry-run is read-only.
 	var ix *fileindex.Index
 	if i, lerr := fileindex.Load(cwd); lerr == nil {
 		if _, serr := i.Sync(cwd, hash.LoadIgnorePatterns(cwd), runtime.NumCPU()); serr == nil {
@@ -369,12 +370,6 @@ func handleDryRun(cfg *config.Config, g *dag.Graph, cacheMgr *cache.Manager, tar
 		} else {
 			fmt.Fprintf(stdout, "  [WILL EXECUTE]   %-16s (hash: %s)\n", taskName, shortFP)
 			execCount++
-		}
-	}
-
-	if ix != nil {
-		if err := ix.Save(cwd); err != nil {
-			fmt.Fprintf(stderr, "warning: saving file index: %v\n", err)
 		}
 	}
 
