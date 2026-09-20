@@ -71,6 +71,7 @@ vecto graph --format=mermaid  # or --json for CI
 ```
 
 * Event-driven scheduler, SHA-256 transitive hashing, atomic cache with cross-platform locks — see [ADR-0006](docs/adr/0006-reactive-event-driven-scheduler.md), [ADR-0004](docs/adr/0004-cryptographic-input-hashing.md), [ADR-0008](docs/adr/0008-atomic-cache-staging.md).
+* **Merkle File Index (VFI):** incremental input fingerprinting in O(changed files) — a persistent stat-cached Merkle forest under `.vecto/`, glob-coverage digests, git-racy-safe; on by default, `--no-file-index` for the legacy full-scan path — see [ADR-0019](docs/adr/0019-merkle-file-index-incremental-fingerprinting.md) and the 100k-file proof in [`docs/benchmarks.md`](docs/benchmarks.md) §7.
 * **Resume bullets:** "Built content-addressed DAG runner in Go: event-driven scheduler, SHA-256 transitive hashing, atomic cache with cross-platform locks" and "17ms hot replay (7 tasks), 2.8ms topo-sort on 10k nodes, 3-way CI" — numbers from [`docs/benchmarks.md`](docs/benchmarks.md).
 
 ---
@@ -79,6 +80,7 @@ vecto graph --format=mermaid  # or --json for CI
 
 * Dispatches tasks as dependencies resolve (event-driven, not phase-blocked).
 * Content-addressed fingerprints over commands, input files (`**` globs + ignore files), env vars, and upstream hashes.
+* Incremental fingerprinting: a Merkle file index (`.vecto/fileindex.json`) re-hashes only what changed — one stat cascade per run, 0 file reads when nothing changed; `vecto index` / `vecto index --rebuild` for introspection, `--no-file-index` to opt out.
 * Cache integrity: schema versioning, SHA-256 verification, atomic staging + file locks, optional HTTP remote cache.
 * Process-group teardown (`SIGTERM` then `SIGKILL` / `taskkill /F /T`).
 * Tooling: `vecto graph`, `--dry-run`, `--` passthrough, `slog` logging, `--json` summary.
@@ -89,6 +91,7 @@ vecto graph --format=mermaid  # or --json for CI
 |---|---|---|
 | Hot replay (7 tasks) | 773 ms | 17.5 ms |
 | Topo-sort 10k nodes | — | 2.8 ms |
+| 100k-file warm fingerprinting | — | 0.59 s (VFI) vs 5.69 s legacy, 9.6× |
 
 Same-machine Turbo/Just rows and full method in [`docs/benchmarks.md`](docs/benchmarks.md). Hot vs Make flatters any cacher (Make has no cache); the honest cacher-vs-cacher table is in section 6 there.
 
