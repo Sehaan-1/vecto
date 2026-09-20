@@ -17,26 +17,11 @@ func setProcAttrs(cmd *exec.Cmd) {
 	}
 }
 
-// terminateProcessGroup performs a two-phase teardown on Windows:
-// 1. Attempts to send a CTRL_BREAK_EVENT to the process group.
-// 2. Starts an escalation timer for gracePeriod, followed by Process.Kill().
+// terminateProcessGroup performs process teardown on Windows.
+// Because Windows lacks POSIX signals (SIGTERM/SIGKILL), process teardown
+// is performed via Process.Kill() (which invokes the Win32 TerminateProcess API).
 func terminateProcessGroup(cmd *exec.Cmd, gracePeriod time.Duration, done <-chan struct{}) {
-	if cmd.Process == nil {
-		return
+	if cmd.Process != nil {
+		_ = cmd.Process.Kill()
 	}
-
-	// Phase 1: Attempt polite CTRL_BREAK_EVENT to process group
-	_ = syscall.GenerateConsoleCtrlEvent(syscall.CTRL_BREAK_EVENT, uint32(cmd.Process.Pid))
-
-	// Phase 2: Escalation timer
-	go func() {
-		select {
-		case <-time.After(gracePeriod):
-			if cmd.Process != nil {
-				_ = cmd.Process.Kill()
-			}
-		case <-done:
-			// Process exited cleanly within grace period
-		}
-	}()
 }

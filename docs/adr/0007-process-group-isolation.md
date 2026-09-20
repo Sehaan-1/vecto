@@ -40,19 +40,13 @@ cmd.SysProcAttr = &syscall.SysProcAttr{
     CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP,
 }
 
-// Phase 1: Attempt polite console break event
-_ = syscall.GenerateConsoleCtrlEvent(syscall.CTRL_BREAK_EVENT, uint32(cmd.Process.Pid))
-
-// Phase 2: Escalation timer followed by Process.Kill()
-go func() {
-    select {
-    case <-time.After(gracePeriod):
-        if cmd.Process != nil {
-            _ = cmd.Process.Kill()
-        }
-    case <-done:
+// Windows lacks POSIX signals (SIGTERM/SIGKILL); teardown terminates the process
+// and its associated job object directly via Process.Kill() (TerminateProcess Win32 API).
+func terminateProcessGroup(cmd *exec.Cmd, gracePeriod time.Duration, done <-chan struct{}) {
+    if cmd.Process != nil {
+        _ = cmd.Process.Kill()
     }
-}()
+}
 ```
 
 ### Cancellation watcher goroutine in `executeCommand`
