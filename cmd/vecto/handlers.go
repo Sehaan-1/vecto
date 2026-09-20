@@ -279,6 +279,10 @@ func handleRun(args []string, stdout, stderr io.Writer) int {
 	runErr := r.Run(ctx, targets)
 	elapsed := time.Since(startRun)
 
+	// Wait for background remote uploads so short runs do not exit before
+	// entries reach the server. Bounded: never blocks past the timeout.
+	cacheMgr.WaitForUploads(30 * time.Second)
+
 	if jsonOutput {
 		jsonBytes, err := reporter.JSONSummary(elapsed)
 		if err == nil {

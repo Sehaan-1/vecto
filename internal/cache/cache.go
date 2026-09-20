@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -54,6 +55,10 @@ type Manager struct {
 	BaseDir  string
 	CacheDir string
 	Remote   RemoteBackend
+	// uploads tracks in-flight async remote PUTs so callers can wait for
+	// them. Without this, short CLI runs exit before uploads finish and
+	// entries are silently lost. Always use *Manager, never copy it.
+	uploads sync.WaitGroup
 }
 
 // New creates a new Cache Manager honoring ADR-0003.
@@ -225,7 +230,9 @@ func (m *Manager) Store(hash, taskName string, exitCode int, duration time.Durat
 	// The upload map only holds artifacts within MaxRemoteArtifactBytes;
 	// larger outputs stay local-only until a streaming-upload ADR lands.
 	if m.Remote != nil {
+		m.uploads.Add(1)
 		go func(e Entry, log []byte, artMap map[string][]byte) {
+			defer m.uploads.Done()
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			_ = m.Remote.Put(ctx, hash, &e, log, artMap)
@@ -233,6 +240,24 @@ func (m *Manager) Store(hash, taskName string, exitCode int, duration time.Durat
 	}
 
 	return nil
+}
+
+// WaitForUploads blocks until in-flight remote uploads finish or the timeout
+// elapses. It reports false on timeout; uploads keep running in the background.
+func (m *Manager) WaitForUploads(timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		m.uploads.Wait()
+		close(done)
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	}
 }
 
 func (m *Manager) hasLocal(hash string) bool {
