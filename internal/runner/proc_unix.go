@@ -16,11 +16,11 @@ func setProcAttrs(cmd *exec.Cmd) {
 }
 
 // terminateProcessGroup performs a two-phase escalation teardown:
-// 1. Sends SIGTERM to the entire process group (-pgid) so child processes
-//    (compilers, tests, database handles) can catch the signal, flush buffers,
-//    and shut down cleanly (ADR-0007).
-// 2. Starts an escalation timer for gracePeriod.
-// 3. If cmd has not exited when the grace period expires, delivers SIGKILL.
+//  1. Sends SIGTERM to the entire process group (-pgid) so child processes
+//     (compilers, tests, database handles) can catch the signal, flush buffers,
+//     and shut down cleanly (ADR-0007).
+//  2. Starts an escalation timer for gracePeriod.
+//  3. If cmd has not exited when the grace period expires, delivers SIGKILL.
 func terminateProcessGroup(cmd *exec.Cmd, gracePeriod time.Duration, done <-chan struct{}) {
 	if cmd.Process == nil {
 		return

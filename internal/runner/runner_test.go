@@ -432,4 +432,3 @@ func TestRunner_PassthroughArgs(t *testing.T) {
 		t.Errorf("expected passthrough args 'hello world 123' in output, got:\n%s", out)
 	}
 }
-

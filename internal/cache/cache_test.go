@@ -172,7 +172,8 @@ func TestCache_FileLocking(t *testing.T) {
 	_ = exLock.Unlock()
 }
 
-func TestCache_RemoteHTTPBackend(t *testing.T) {	storage := make(map[string][]byte)
+func TestCache_RemoteHTTPBackend(t *testing.T) {
+	storage := make(map[string][]byte)
 	var mu sync.Mutex
 
 	// Mock remote cache HTTP server

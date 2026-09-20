@@ -85,4 +85,3 @@ func TestUI_TTYColorOutput(t *testing.T) {
 		t.Errorf("expected red [✗ FAILED] ANSI escape in TTY mode, got:\n%s", out)
 	}
 }
-

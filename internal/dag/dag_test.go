@@ -248,4 +248,3 @@ func TestDAG_DOTExport(t *testing.T) {
 		t.Errorf("expected '\"test\" -> \"build\";' in DOT, got:\n%s", dot)
 	}
 }
-
