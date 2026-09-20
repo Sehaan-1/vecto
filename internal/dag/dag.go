@@ -225,6 +225,99 @@ func (g *Graph) NeededTasks(targets []string) map[string]bool {
 	return needed
 }
 
+// ToMermaid generates a deterministic Mermaid.js diagram representing the DAG.
+// Dependencies point to dependents (upstream --> downstream).
+// If targets are provided, only tasks in the needed subgraph are included.
+func (g *Graph) ToMermaid(targets []string) (string, error) {
+	if _, err := g.TopologicalSort(); err != nil {
+		return "", err
+	}
+
+	needed := g.NeededTasks(targets)
+	var sb strings.Builder
+	sb.WriteString("graph TD\n")
+
+	tasks := make([]string, 0, len(needed))
+	for t := range needed {
+		tasks = append(tasks, t)
+	}
+	sort.Strings(tasks)
+
+	connected := make(map[string]bool)
+
+	// In Vecto, if task T has dependency D, D executes before T (D --> T)
+	for _, task := range tasks {
+		deps := make([]string, 0)
+		for _, dep := range g.dependencies[task] {
+			if needed[dep] {
+				deps = append(deps, dep)
+			}
+		}
+		sort.Strings(deps)
+
+		for _, dep := range deps {
+			sb.WriteString(fmt.Sprintf("  %s --> %s\n", dep, task))
+			connected[dep] = true
+			connected[task] = true
+		}
+	}
+
+	// Output isolated nodes that have no edges
+	for _, task := range tasks {
+		if !connected[task] {
+			sb.WriteString(fmt.Sprintf("  %s\n", task))
+		}
+	}
+
+	return strings.TrimRight(sb.String(), "\n"), nil
+}
+
+// ToDOT generates a deterministic Graphviz DOT representation of the DAG.
+func (g *Graph) ToDOT(targets []string) (string, error) {
+	if _, err := g.TopologicalSort(); err != nil {
+		return "", err
+	}
+
+	needed := g.NeededTasks(targets)
+	var sb strings.Builder
+	sb.WriteString("digraph G {\n")
+	sb.WriteString("  rankdir=TB;\n")
+
+	tasks := make([]string, 0, len(needed))
+	for t := range needed {
+		tasks = append(tasks, t)
+	}
+	sort.Strings(tasks)
+
+	connected := make(map[string]bool)
+
+	for _, task := range tasks {
+		deps := make([]string, 0)
+		for _, dep := range g.dependencies[task] {
+			if needed[dep] {
+				deps = append(deps, dep)
+			}
+		}
+		sort.Strings(deps)
+
+		for _, dep := range deps {
+			sb.WriteString(fmt.Sprintf("  \"%s\" -> \"%s\";\n", dep, task))
+			connected[dep] = true
+			connected[task] = true
+		}
+	}
+
+	// Output isolated nodes
+	for _, task := range tasks {
+		if !connected[task] {
+			sb.WriteString(fmt.Sprintf("  \"%s\";\n", task))
+		}
+	}
+
+	sb.WriteString("}")
+	return sb.String(), nil
+}
+
 func (g *Graph) findCyclePath(remaining map[string]int) string {
 	visited := make(map[string]bool)
 	recStack := make(map[string]bool)

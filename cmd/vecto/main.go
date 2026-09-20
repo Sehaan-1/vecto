@@ -7,10 +7,13 @@ import (
 	"os"
 	"runtime"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/Sehaan-1/vecto/internal/cache"
 	"github.com/Sehaan-1/vecto/internal/config"
+	"github.com/Sehaan-1/vecto/internal/dag"
+	"github.com/Sehaan-1/vecto/internal/hash"
 	"github.com/Sehaan-1/vecto/internal/runner"
 	"github.com/Sehaan-1/vecto/internal/ui"
 )
@@ -44,6 +47,10 @@ func main() {
 
 	case "list":
 		handleList()
+		return
+
+	case "graph":
+		handleGraph(os.Args[2:])
 		return
 
 	case "run":
@@ -161,7 +168,72 @@ func handleList() {
 	}
 }
 
+func handleGraph(args []string) {
+	graphFlags := flag.NewFlagSet("graph", flag.ExitOnError)
+	format := graphFlags.String("format", "mermaid", "Output format: mermaid or dot")
+	graphFlags.StringVar(format, "f", "mermaid", "Short for -format")
+
+	if err := graphFlags.Parse(args); err != nil {
+		os.Exit(1)
+	}
+
+	targets := graphFlags.Args()
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = "."
+	}
+
+	cfg, err := config.LoadConfig(cwd)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	g, err := cfg.BuildGraph()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error resolving task graph: %v\n", err)
+		os.Exit(1)
+	}
+
+	switch strings.ToLower(*format) {
+	case "mermaid", "mmd":
+		out, err := g.ToMermaid(targets)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating Mermaid graph: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(out)
+	case "dot", "graphviz":
+		out, err := g.ToDOT(targets)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating DOT graph: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(out)
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown format %q (supported: mermaid, dot)\n", *format)
+		os.Exit(1)
+	}
+}
+
 func handleRun(args []string) {
+	// Separate runner flags from dynamic passthrough args after "--"
+	var runnerArgs []string
+	var passthroughArgs []string
+	for i, arg := range args {
+		if arg == "--" {
+			runnerArgs = args[:i]
+			if i+1 < len(args) {
+				passthroughArgs = args[i+1:]
+			}
+			break
+		}
+	}
+	if passthroughArgs == nil {
+		runnerArgs = args
+	}
+
 	runFlags := flag.NewFlagSet("run", flag.ExitOnError)
 	concurrency := runFlags.Int("concurrency", runtime.NumCPU(), "Max concurrent worker goroutines")
 	runFlags.IntVar(concurrency, "c", runtime.NumCPU(), "Short for -concurrency")
@@ -171,8 +243,10 @@ func handleRun(args []string) {
 	runFlags.BoolVar(force, "f", false, "Short for -force")
 	verbose := runFlags.Bool("verbose", false, "Surface command output for successful and cached tasks")
 	runFlags.BoolVar(verbose, "v", false, "Short for -verbose")
+	dryRun := runFlags.Bool("dry-run", false, "Preview execution plan and cache status without executing commands")
+	runFlags.BoolVar(dryRun, "d", false, "Short for -dry-run")
 
-	if err := runFlags.Parse(args); err != nil {
+	if err := runFlags.Parse(runnerArgs); err != nil {
 		os.Exit(1)
 	}
 
@@ -196,13 +270,20 @@ func handleRun(args []string) {
 	}
 
 	cacheMgr := cache.New(cwd)
+
+	if *dryRun {
+		handleDryRun(cfg, g, cacheMgr, targets, cwd)
+		return
+	}
+
 	reporter := ui.NewReporter(os.Stdout, isTerminal(os.Stdout))
 
 	r := runner.New(cfg, g, cacheMgr, reporter, cwd, runner.Options{
-		Concurrency: *concurrency,
-		KeepGoing:   *keepGoing,
-		Force:       *force,
-		Verbose:     *verbose,
+		Concurrency:     *concurrency,
+		KeepGoing:       *keepGoing,
+		Force:           *force,
+		Verbose:         *verbose,
+		PassthroughArgs: passthroughArgs,
 	})
 
 	ctx := context.Background()
@@ -211,14 +292,70 @@ func handleRun(args []string) {
 	}
 }
 
+func handleDryRun(cfg *config.Config, g *dag.Graph, cacheMgr *cache.Manager, targets []string, cwd string) {
+	topo, err := g.TopologicalSort()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error resolving task graph: %v\n", err)
+		os.Exit(1)
+	}
+
+	needed := g.NeededTasks(targets)
+	depFingerprints := make(map[string]string)
+
+	var plannedTasks []string
+	for _, taskName := range topo {
+		if needed[taskName] {
+			plannedTasks = append(plannedTasks, taskName)
+		}
+	}
+
+	fmt.Printf("Dry-run execution plan (%d tasks):\n\n", len(plannedTasks))
+	cachedCount := 0
+	execCount := 0
+
+	for _, taskName := range plannedTasks {
+		taskCfg := cfg.Tasks[taskName]
+
+		deps := make(map[string]string, len(taskCfg.Dependencies))
+		for _, dep := range taskCfg.Dependencies {
+			if fp, ok := depFingerprints[dep]; ok {
+				deps[dep] = fp
+			}
+		}
+
+		fp, err := hash.ComputeTaskFingerprint(cwd, taskCfg.Command, taskCfg.Inputs, taskCfg.Env, deps)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error computing fingerprint for %s: %v\n", taskName, err)
+			os.Exit(1)
+		}
+		depFingerprints[taskName] = fp
+
+		shortFP := fp
+		if len(shortFP) > 12 {
+			shortFP = shortFP[:12]
+		}
+
+		if cacheMgr.Has(fp) {
+			fmt.Printf("  [⚡ CACHED]       %-16s (hash: %s)\n", taskName, shortFP)
+			cachedCount++
+		} else {
+			fmt.Printf("  [WILL EXECUTE]   %-16s (hash: %s)\n", taskName, shortFP)
+			execCount++
+		}
+	}
+
+	fmt.Printf("\nPlan Summary: %d total (%d cached, %d will execute)\n", len(plannedTasks), cachedCount, execCount)
+}
+
 func printUsage() {
 	fmt.Printf(`Vecto - High-Performance DAG Task & Build Caching Engine (v%s)
 
 Usage:
-  vecto <command> [flags] [targets...]
+  vecto <command> [flags] [targets...] [-- [args...]]
 
 Commands:
   run [targets...]                 Run task(s) and their dependencies concurrently
+  graph [targets...]               Export task graph as Mermaid or Graphviz DOT diagram
   list                             List all tasks defined in vecto.yaml
   init                             Create a sample vecto.yaml in current directory
   clean [-a, --max-age <duration>] Clear or prune cached task outputs
@@ -229,9 +366,17 @@ Flags for 'run':
   -k, --keep-going                 Continue independent tasks on failure
   -f, --force                      Bypass cache and force rerun
   -v, --verbose                    Print command output for all tasks
+  -d, --dry-run                    Preview execution plan and cache status without running commands
   -h, --help                       Show help
+
+Flags for 'graph':
+  -f, --format <format>            Output format: mermaid (default) or dot
 
 Flags for 'clean':
   -a, --max-age <duration>         Prune entries older than duration (e.g. 24h, 168h)
+
+Argument Passthrough:
+  Pass flags directly to underlying task commands using the '--' separator:
+    vecto run test -- -v -run TestSingle
 `, Version, runtime.NumCPU())
 }

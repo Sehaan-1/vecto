@@ -183,3 +183,69 @@ func BenchmarkDAG_1000Nodes_ExecutionLayers(b *testing.B) {
 		}
 	}
 }
+
+func TestDAG_MermaidExport(t *testing.T) {
+	g := dag.New()
+	g.AddTask("lint", nil)
+	g.AddTask("codegen", nil)
+	g.AddTask("test", []string{"lint"})
+	g.AddTask("build", []string{"test", "codegen"})
+	g.AddTask("isolated", nil)
+
+	// Full graph export
+	mermaid, err := g.ToMermaid(nil)
+	if err != nil {
+		t.Fatalf("ToMermaid failed: %v", err)
+	}
+
+	if !strings.HasPrefix(mermaid, "graph TD") {
+		t.Errorf("expected graph TD prefix, got:\n%s", mermaid)
+	}
+	if !strings.Contains(mermaid, "lint --> test") {
+		t.Errorf("expected 'lint --> test' in mermaid, got:\n%s", mermaid)
+	}
+	if !strings.Contains(mermaid, "codegen --> build") {
+		t.Errorf("expected 'codegen --> build' in mermaid, got:\n%s", mermaid)
+	}
+	if !strings.Contains(mermaid, "isolated") {
+		t.Errorf("expected 'isolated' node in mermaid, got:\n%s", mermaid)
+	}
+
+	// Subgraph export with target "test"
+	subMermaid, err := g.ToMermaid([]string{"test"})
+	if err != nil {
+		t.Fatalf("ToMermaid with target failed: %v", err)
+	}
+	if !strings.Contains(subMermaid, "lint --> test") {
+		t.Errorf("expected 'lint --> test' in sub-mermaid, got:\n%s", subMermaid)
+	}
+	if strings.Contains(subMermaid, "build") {
+		t.Errorf("build should not be present in sub-mermaid targeting 'test'")
+	}
+	if strings.Contains(subMermaid, "isolated") {
+		t.Errorf("isolated should not be present in sub-mermaid targeting 'test'")
+	}
+}
+
+func TestDAG_DOTExport(t *testing.T) {
+	g := dag.New()
+	g.AddTask("lint", nil)
+	g.AddTask("test", []string{"lint"})
+	g.AddTask("build", []string{"test"})
+
+	dot, err := g.ToDOT(nil)
+	if err != nil {
+		t.Fatalf("ToDOT failed: %v", err)
+	}
+
+	if !strings.Contains(dot, "digraph G {") {
+		t.Errorf("expected digraph G prefix, got:\n%s", dot)
+	}
+	if !strings.Contains(dot, `"lint" -> "test";`) {
+		t.Errorf("expected '\"lint\" -> \"test\";' in DOT, got:\n%s", dot)
+	}
+	if !strings.Contains(dot, `"test" -> "build";`) {
+		t.Errorf("expected '\"test\" -> \"build\";' in DOT, got:\n%s", dot)
+	}
+}
+

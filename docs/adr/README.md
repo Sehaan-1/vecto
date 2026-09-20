@@ -7,3 +7,7 @@
 | [ADR-0003](0003-hybrid-cache-storage-directory.md) | Where saved build output lives | accepted | |
 | [ADR-0004](0004-cryptographic-input-hashing.md) | Cryptographic input hashing for cache fingerprints | accepted | |
 | [ADR-0005](0005-fail-fast-with-keep-going.md) | Task failure lifecycle and keep-going execution | accepted | |
+| [ADR-0006](0006-reactive-event-driven-scheduler.md) | Reactive event-driven task scheduler | accepted | |
+| [ADR-0007](0007-process-group-isolation.md) | Process group isolation and two-phase teardown | accepted | |
+| [ADR-0008](0008-atomic-cache-staging.md) | Atomic cache staging via staging directory and rename | accepted | |
+| [ADR-0009](0009-graph-inspection-and-dry-run.md) | Graph inspection and dry-run execution mode | accepted | |
