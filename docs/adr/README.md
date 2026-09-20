@@ -11,3 +11,6 @@
 | [ADR-0007](0007-process-group-isolation.md) | Process group isolation and two-phase teardown | accepted | |
 | [ADR-0008](0008-atomic-cache-staging.md) | Atomic cache staging via staging directory and rename | accepted | |
 | [ADR-0009](0009-graph-inspection-and-dry-run.md) | Graph inspection and dry-run execution mode | accepted | |
+| [ADR-0010](0010-one-line-install-and-releases.md) | How people install it | accepted | |
+| [ADR-0011](0011-testable-cli-shape.md) | How the command line is shaped for tests | accepted | |
+| [ADR-0012](0012-large-artifact-memory-cap.md) | What happens to huge files when saving | accepted | |
