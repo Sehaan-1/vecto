@@ -129,7 +129,7 @@ func (m *Manager) Store(hash, taskName string, exitCode int, duration time.Durat
 	// Acquire exclusive file lock for this hash
 	lock, err := AcquireLock(m.lockPath(hash), LockExclusive)
 	if err == nil {
-		defer lock.Unlock()
+		defer func() { _ = lock.Unlock() }()
 	}
 
 	// If entry is already valid and complete, no need to overwrite
@@ -271,7 +271,7 @@ func (m *Manager) Restore(hash string) (*Entry, []byte, error) {
 	// Acquire shared lock
 	lock, err := AcquireLock(m.lockPath(hash), LockShared)
 	if err == nil {
-		defer lock.Unlock()
+		defer func() { _ = lock.Unlock() }()
 	}
 
 	// If missing locally, try hydrating from remote cache

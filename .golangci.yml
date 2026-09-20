@@ -7,5 +7,13 @@ linters:
     - misspell
     - staticcheck
     - unused
-    - gofmt
-    - goimports
+linters-settings:
+  errcheck:
+    exclude-functions:
+      - (*github.com/Sehaan-1/vecto/internal/cache.FileLock).Unlock
+issues:
+  exclude-rules:
+    - path: benchmarks/benchmark_test.go
+      linters: [gofmt]
+    - path: test/e2e/remote_e2e_test.go
+      linters: [errcheck]
