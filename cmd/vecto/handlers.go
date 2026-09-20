@@ -14,6 +14,7 @@ import (
 	"github.com/Sehaan-1/vecto/internal/cache"
 	"github.com/Sehaan-1/vecto/internal/config"
 	"github.com/Sehaan-1/vecto/internal/dag"
+	"github.com/Sehaan-1/vecto/internal/fileindex"
 	"github.com/Sehaan-1/vecto/internal/hash"
 	"github.com/Sehaan-1/vecto/internal/logger"
 	"github.com/Sehaan-1/vecto/internal/runner"
@@ -220,6 +221,8 @@ func handleRun(args []string, stdout, stderr io.Writer) int {
 	runFlags.BoolVar(&dryRun, "d", false, "Short for -dry-run")
 	var jsonOutput bool
 	runFlags.BoolVar(&jsonOutput, "json", false, "Output execution summary in machine-readable JSON format for CI")
+	var noFileIndex bool
+	runFlags.BoolVar(&noFileIndex, "no-file-index", false, "Disable the Merkle file index (ADR-0019); use legacy full-scan hashing")
 	var logLevel string
 	runFlags.StringVar(&logLevel, "log-level", "info", "Log level: debug, info, warn, error")
 	var logFormat string
@@ -272,6 +275,7 @@ func handleRun(args []string, stdout, stderr io.Writer) int {
 		Force:           force,
 		Verbose:         verbose,
 		PassthroughArgs: passthroughArgs,
+		FileIndex:       !noFileIndex,
 	})
 
 	ctx := context.Background()
@@ -306,6 +310,15 @@ func handleDryRun(cfg *config.Config, g *dag.Graph, cacheMgr *cache.Manager, tar
 	needed := g.NeededTasks(targets)
 	depFingerprints := make(map[string]string)
 
+	// ADR-0019: dry-run goes through the same Merkle file index as run, so
+	// the preview reflects the exact fingerprints execution will use.
+	var ix *fileindex.Index
+	if i, lerr := fileindex.Load(cwd); lerr == nil {
+		if _, serr := i.Sync(cwd, hash.LoadIgnorePatterns(cwd), runtime.NumCPU()); serr == nil {
+			ix = i
+		}
+	}
+
 	var plannedTasks []string
 	for _, taskName := range topo {
 		if needed[taskName] {
@@ -327,10 +340,21 @@ func handleDryRun(cfg *config.Config, g *dag.Graph, cacheMgr *cache.Manager, tar
 			}
 		}
 
-		fp, err := hash.ComputeTaskFingerprint(cwd, taskCfg.Command, taskCfg.Inputs, taskCfg.Env, deps)
-		if err != nil {
-			fmt.Fprintf(stderr, "Error computing fingerprint for %s: %v\n", taskName, err)
-			return 1
+		var fp string
+		if ix != nil {
+			coverage, _, cerr := ix.Coverage(taskCfg.Inputs)
+			if cerr != nil {
+				fmt.Fprintf(stderr, "Error computing fingerprint for %s: %v\n", taskName, cerr)
+				return 1
+			}
+			fp = hash.FingerprintFromCoverage(taskCfg.Command, taskCfg.Env, deps, coverage)
+		} else {
+			var cerr error
+			fp, cerr = hash.ComputeTaskFingerprint(cwd, taskCfg.Command, taskCfg.Inputs, taskCfg.Env, deps)
+			if cerr != nil {
+				fmt.Fprintf(stderr, "Error computing fingerprint for %s: %v\n", taskName, cerr)
+				return 1
+			}
 		}
 		depFingerprints[taskName] = fp
 
@@ -348,6 +372,74 @@ func handleDryRun(cfg *config.Config, g *dag.Graph, cacheMgr *cache.Manager, tar
 		}
 	}
 
+	if ix != nil {
+		if err := ix.Save(cwd); err != nil {
+			fmt.Fprintf(stderr, "warning: saving file index: %v\n", err)
+		}
+	}
+
 	fmt.Fprintf(stdout, "\nPlan Summary: %d total (%d cached, %d will execute)\n", len(plannedTasks), cachedCount, execCount)
+	return 0
+}
+
+func handleIndex(args []string, stdout, stderr io.Writer) int {
+	indexFlags := flag.NewFlagSet("index", flag.ContinueOnError)
+	indexFlags.SetOutput(stderr)
+	var rebuild bool
+	indexFlags.BoolVar(&rebuild, "rebuild", false, "Delete the Merkle file index; the next run rebuilds it from scratch")
+
+	if err := indexFlags.Parse(args); err != nil {
+		return 2
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = "."
+	}
+
+	if rebuild {
+		path := fileindex.IndexPath(cwd)
+		if _, err := os.Stat(path); err != nil {
+			fmt.Fprintln(stdout, "No file index present; nothing to rebuild.")
+			return 0
+		}
+		if err := os.Remove(path); err != nil {
+			fmt.Fprintf(stderr, "Error removing file index: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "Removed file index (%s); the next run rebuilds it.\n", path)
+		return 0
+	}
+
+	ix, err := fileindex.Load(cwd)
+	if err != nil {
+		fmt.Fprintf(stderr, "Error: %v (run 'vecto index --rebuild' to start over)\n", err)
+		return 1
+	}
+	if len(ix.Nodes) == 0 {
+		fmt.Fprintln(stdout, "No file index yet. Run 'vecto run' to build one.")
+		return 0
+	}
+	files, dirs := 0, 0
+	for _, n := range ix.Nodes {
+		if n.IsDir {
+			dirs++
+		} else {
+			files++
+		}
+	}
+	info, _ := os.Stat(fileindex.IndexPath(cwd))
+	size := int64(0)
+	if info != nil {
+		size = info.Size()
+	}
+	fmt.Fprintf(stdout, "Merkle File Index (ADR-0019)\n")
+	fmt.Fprintf(stdout, "  location:      %s\n", fileindex.IndexPath(cwd))
+	fmt.Fprintf(stdout, "  schema:        %d\n", ix.Schema)
+	fmt.Fprintf(stdout, "  last sync:     %s\n", ix.Snapshot.Format(time.RFC3339))
+	fmt.Fprintf(stdout, "  root hash:     %s\n", ix.RootHash)
+	fmt.Fprintf(stdout, "  files indexed: %d\n", files)
+	fmt.Fprintf(stdout, "  dirs indexed:  %d\n", dirs)
+	fmt.Fprintf(stdout, "  index size:    %d bytes\n", size)
 	return 0
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/Sehaan-1/vecto/internal/cache"
 	"github.com/Sehaan-1/vecto/internal/config"
 	"github.com/Sehaan-1/vecto/internal/dag"
+	"github.com/Sehaan-1/vecto/internal/fileindex"
 	"github.com/Sehaan-1/vecto/internal/hash"
 	"github.com/Sehaan-1/vecto/internal/ui"
 )
@@ -25,6 +26,10 @@ type Options struct {
 	Force           bool
 	Verbose         bool
 	PassthroughArgs []string
+	// FileIndex enables Merkle File Index (VFI) incremental fingerprinting
+	// (ADR-0019). When false, the legacy per-task full-scan hashing path is
+	// used.
+	FileIndex bool
 }
 
 // Runner coordinates concurrent task scheduling and execution.
@@ -35,6 +40,17 @@ type Runner struct {
 	Reporter *ui.Reporter
 	BaseDir  string
 	Opts     Options
+
+	// fileIndex is populated at the start of Run when Opts.FileIndex is set
+	// and the index loads + syncs cleanly; nil means legacy hashing.
+	fileIndex *fileindex.Index
+	// indexDirty marks that this run stored a new task fingerprint in the
+	// index (memoization miss) — used to decide whether the index must be
+	// persisted even when the tree root hash did not change.
+	indexDirty bool
+	// indexTreeUnchanged is true when the sync produced the same root hash
+	// as the loaded index (0 stat-level changes in the tree).
+	indexTreeUnchanged bool
 }
 
 // New creates a new Runner instance.
@@ -83,6 +99,31 @@ func (r *Runner) Run(ctx context.Context, targetTasks []string) error {
 		neededSlice = append(neededSlice, t)
 	}
 	r.Reporter.RegisterTasks(neededSlice)
+
+	// ADR-0019: load + sync the Merkle file index once, before dispatch.
+	// Every failure mode degrades to legacy full-scan hashing (the safe
+	// direction): a corrupted index or sync error can never skip a task.
+	if r.Opts.FileIndex {
+		if ix, err := fileindex.Load(r.BaseDir); err == nil {
+			preSyncRoot := ix.RootHash
+			if rep, serr := ix.Sync(r.BaseDir, hash.LoadIgnorePatterns(r.BaseDir), r.Opts.Concurrency); serr == nil {
+				r.fileIndex = ix
+				r.indexTreeUnchanged = ix.RootHash == preSyncRoot
+				if r.Opts.Verbose {
+					fmt.Fprintf(r.Reporter.Writer(),
+						"file index: %d files (%d re-hashed, %d trusted, %d dirs) in %s, root %s…\n",
+						rep.FilesSeen, rep.FilesHashed, rep.FilesTrusted, rep.DirsSeen,
+						rep.Elapsed.Round(time.Millisecond), ix.RootHash[:12])
+				}
+			} else {
+				fmt.Fprintf(r.Reporter.Writer(),
+					"warning: file index sync failed (%v); falling back to full-scan hashing\n", serr)
+			}
+		} else {
+			fmt.Fprintf(r.Reporter.Writer(),
+				"warning: file index unavailable (%v); falling back to full-scan hashing\n", err)
+		}
+	}
 
 	// Context with cancellation on failure
 	runCtx, cancel := context.WithCancel(ctx)
@@ -180,6 +221,20 @@ func (r *Runner) Run(ctx context.Context, targetTasks []string) error {
 
 	wg.Wait()
 
+	// Persist the refreshed index (task fingerprints + stat tuples) so the
+	// next run's sync starts warm. A 0-change run with no new task records
+	// modifies nothing — skip the write entirely (the warm path is then one
+	// read + one stat cascade, zero index writes). Keeping the stale stat
+	// tuples is sound: any real change still shows up as a tuple mismatch,
+	// and a same-second rewrite is caught by the racy rule, which compares
+	// against the retained (older) snapshot second. Best-effort: a failure
+	// here only costs the next run a cold-ish sync.
+	if r.fileIndex != nil && (!r.indexTreeUnchanged || r.indexDirty) {
+		if err := r.fileIndex.Save(r.BaseDir); err != nil {
+			fmt.Fprintf(r.Reporter.Writer(), "warning: saving file index: %v\n", err)
+		}
+	}
+
 	r.Reporter.Summary(time.Since(startTime))
 
 	if len(failedTasks) > 0 {
@@ -217,8 +272,15 @@ func (r *Runner) runTask(
 	}
 	mu.Unlock()
 
-	// Compute content-addressable fingerprint
-	fingerprint, err := hash.ComputeTaskFingerprint(r.BaseDir, cmdToRun, taskCfg.Inputs, taskCfg.Env, depFingerprints)
+	// Compute content-addressable fingerprint: VFI coverage digest when the
+	// Merkle file index is available, legacy full-scan hashing otherwise.
+	var fingerprint string
+	var err error
+	if r.fileIndex != nil {
+		fingerprint, err = r.indexedFingerprint(name, cmdToRun, taskCfg, depFingerprints, mu)
+	} else {
+		fingerprint, err = hash.ComputeTaskFingerprint(r.BaseDir, cmdToRun, taskCfg.Inputs, taskCfg.Env, depFingerprints)
+	}
 	if err != nil {
 		mu.Lock()
 		failedTasks[name] = err
@@ -275,6 +337,44 @@ func (r *Runner) runTask(
 	if r.Opts.Verbose && len(output) > 0 {
 		r.Reporter.TaskOutput(name, output)
 	}
+}
+
+// indexedFingerprint computes a task fingerprint from the Merkle file index
+// (ADR-0019). With task-level memoization: if the task definition, the root
+// hash, and all dependency fingerprints are unchanged since the last run,
+// the stored fingerprint is reused without recomputing coverage. The index
+// is only ever a shortcut to the same deterministic digest — it can never
+// change what a fingerprint *is*.
+func (r *Runner) indexedFingerprint(name, cmd string, taskCfg config.TaskConfig, depFingerprints map[string]string, mu *sync.Mutex) (string, error) {
+	depNames := make([]string, 0, len(taskCfg.Dependencies))
+	for _, d := range taskCfg.Dependencies {
+		depNames = append(depNames, d)
+	}
+	def := fileindex.DefHash(cmd, taskCfg.Inputs, taskCfg.Env, depNames)
+
+	mu.Lock()
+	rec := r.fileIndex.Tasks[name]
+	root := r.fileIndex.RootHash
+	mu.Unlock()
+
+	if rec != nil && rec.Def == def && rec.Root == root && fileindex.DepsEqual(rec.Deps, depFingerprints) {
+		return rec.Fp, nil
+	}
+	// Recomputing → a fresh record will be stored: mark the index dirty so
+	// it is persisted even when the tree root hash did not change (the new
+	// record is what makes the next run O(1) for this task).
+	r.indexDirty = true
+
+	coverage, _, err := r.fileIndex.Coverage(taskCfg.Inputs)
+	if err != nil {
+		return "", err
+	}
+	fp := hash.FingerprintFromCoverage(cmd, taskCfg.Env, depFingerprints, coverage)
+
+	mu.Lock()
+	r.fileIndex.Tasks[name] = &fileindex.TaskRec{Def: def, Fp: fp, Root: root, Deps: depFingerprints}
+	mu.Unlock()
+	return fp, nil
 }
 
 // executeCommand runs cmdStr in a subprocess with process-group isolation.

@@ -20,3 +20,4 @@
 | [ADR-0016](0016-readme-top-packaging.md) | What the top of the README shows | accepted | |
 | [ADR-0017](0017-ci-lint-and-coverage.md) | How CI keeps its green promise | accepted | |
 | [ADR-0018](0018-resume-bullets.md) | What resume facts we can honestly claim | accepted | |
+| [ADR-0019](0019-merkle-file-index-incremental-fingerprinting.md) | Merkle File Index — O(changed) incremental fingerprinting | accepted | |

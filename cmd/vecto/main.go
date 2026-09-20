@@ -48,6 +48,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "run":
 		return handleRun(args[1:], stdout, stderr)
 
+	case "index":
+		return handleIndex(args[1:], stdout, stderr)
+
 	default:
 		// If first argument is not a known command, assume it's a task name to run.
 		return handleRun(args, stdout, stderr)

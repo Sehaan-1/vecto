@@ -132,3 +132,76 @@ go test -v ./benchmarks -run TestBenchmark_ExternalRunners
 Requires `turbo`, `just` (plus `sh` on Windows), and `git` on PATH; the test
 skips cleanly when any is missing. Turbo hashes git-tracked files, so the test
 initializes a scratch repo with caches, outputs, and Python bytecode untracked.
+
+## 7. 100,000-File Incremental Detection (Vecto legacy vs VFI vs Turbo)
+
+Per [ADR-0019](adr/0019-merkle-file-index-incremental-fingerprinting.md): this is the
+proof that the Merkle File Index (VFI) makes input fingerprinting O(changed files) and
+holds up against Turborepo 2.x at 100k-file scale.
+
+### Test Environment
+
+- **Machine:** linux/amd64, 2 vCPU, ~4 GB RAM, ext4 (`/dev/root`), Go 1.27.1
+- **Tools:** Vecto (this repo), Turborepo 2.11.2 (global `turbo`, Node v24)
+- **Date:** 2026-09-20
+- **Tree:** generated, 500 packages × 200 files = **100,000 files** (~15 MB,
+  deterministic contents), plus `vecto.yaml` / `turbo.json` / `package.json`.
+- **Workload:** identical 3-task chain — `lint` → `test` → `build`, every task with
+  `inputs: ["packages/**"]` and an `echo` command. Vecto tasks and Turbo tasks declare
+  the same graph and the same inputs.
+- **Warm = second run**, with all files predating the first sync by >1s, so the
+  measurement is a pure 0-change pass (no one-time racy re-hash, per git's racy rule).
+- **Vecto numbers** measure the runner in-process (identical code path to the CLI,
+  minus process startup). **Turbo numbers** are `turbo run build` wall time via the
+  installed binary; git mode uses a committed repo with the daemon warmed by the first
+  run; non-git mode has no `.git` (Turbo's SCM then falls back to manual walking +
+  re-hashing, which is what the source shows: `/tmp/turbo-src`, S1 in
+  [findings/003](findings/003-incremental-detection-at-100k-files.md)).
+
+### Results
+
+| Runner / mode | 2nd run, 0 files modified | 2nd run after 1-file edit |
+|---|---|---|
+| **Vecto legacy** (pre-ADR-0019, `--no-file-index`) | `5.69s` (walk + re-hash every input, per task) | `5.69s` (same full scan, 3 tasks) |
+| **Vecto VFI** (Merkle File Index, on by default) | **`0.59s`** (1 stat cascade, 0 file reads) | **`1.21s`** (stat cascade + exactly 1 re-hash) |
+| **Turbo 2.11.2 (git + daemon)** | `0.58s` (FULL TURBO) | not measured |
+| **Turbo 2.11.2 (non-git)** | `1.02s` (manual SCM: full walk + re-hash, every run) | not measured |
+
+**VFI vs Vecto legacy: 9.6× faster on the 0-change warm run, 4.7× faster after a
+1-file edit.** **VFI vs Turbo (non-git): 1.7× faster.** **VFI vs Turbo (git): parity
+(0.59s vs 0.58s).**
+
+### How to read this
+
+- **The 9.6×/4.7× vs legacy is the algorithmic claim.** Vecto's legacy path re-walks and
+  re-reads all 100k inputs once *per task* (3× duplication here). VFI pays one parallel
+  stat cascade per run and re-hashes only what changed — 0 files when nothing changed.
+- **Turbo's best mode is git mode.** Its fast path is `.git/index` stat comparison plus
+  blob-OID reuse, so without a git repo it degrades to a full walk + re-hash every run —
+  exactly the 1.02s row. VFI reaches the same 0-change performance class without git,
+  without a daemon process, and without a Node.js runtime: one static Go binary.
+- **Parity with Turbo-git is the honest statement, not "beats Turbo".** Turbo's
+  git fast path is the same idea (stat cache + content-addressed reuse) with a
+  daemon; VFI matches it at 100k files on a 2-vCPU box while remaining dependency-free.
+  Where VFI wins outright is the non-git world and every comparison against its own
+  previous behavior.
+- **The k=1 row is the day-to-day one.** One edited file: VFI re-hashes that file plus
+  O(depth) ancestor directories and re-fingerprints the affected tasks; the 99,999
+  untouched files are stat-compared only. Legacy re-reads all 100k × 3 tasks.
+
+### Reproduce
+
+```bash
+# full 100k matrix (includes Turborepo when `turbo` is on PATH); ~1 min
+VECTO_HUNDREDK=1 go test -v ./benchmarks/hundredk -run TestBenchmark_HundredK
+
+# lightweight 500-file smoke matrix (default, CI-friendly, Vecto only)
+go test -v ./benchmarks/hundredk -run TestBenchmark_HundredK
+
+# cost-model diagnostics (crawl vs load vs sync decomposition, raw Lstat rates)
+VECTO_PROFILE=1 go test -v ./internal/fileindex -run 'TestProfile100k|TestRawLstatCost'
+```
+
+The benchmark generator writes the tree to a temp dir per scenario, so each runner
+measured above sees identical bytes. Numbers are single-run walls on the machine above;
+the spread between repeated runs on this box is <±10% for the warm rows.
