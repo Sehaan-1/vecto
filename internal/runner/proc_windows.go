@@ -20,7 +20,7 @@ func setProcAttrs(cmd *exec.Cmd) {
 // terminateProcessGroup performs process teardown on Windows.
 // Because Windows lacks POSIX signals (SIGTERM/SIGKILL), process teardown
 // is performed via Process.Kill() (which invokes the Win32 TerminateProcess API).
-func terminateProcessGroup(cmd *exec.Cmd, gracePeriod time.Duration, done <-chan struct{}) {
+func terminateProcessGroup(cmd *exec.Cmd, _ time.Duration, _ <-chan struct{}) {
 	if cmd.Process != nil {
 		_ = cmd.Process.Kill()
 	}
