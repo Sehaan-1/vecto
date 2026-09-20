@@ -14,3 +14,6 @@
 | [ADR-0010](0010-one-line-install-and-releases.md) | How people install it | accepted | |
 | [ADR-0011](0011-testable-cli-shape.md) | How the command line is shaped for tests | accepted | |
 | [ADR-0012](0012-large-artifact-memory-cap.md) | What happens to huge files when saving | accepted | |
+| [ADR-0013](0013-disk-remote-stub-and-proof.md) | What proves the shared cache is real | accepted | |
+| [ADR-0014](0014-dogfood-ci-build.md) | How our pipeline shows we trust our tool | accepted | |
+| [ADR-0015](0015-honest-benchmark-comparison.md) | How the speed comparison stays honest | accepted | |
