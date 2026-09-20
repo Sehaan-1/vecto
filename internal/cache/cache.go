@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -52,20 +53,42 @@ func (m *Manager) Has(hash string) bool {
 }
 
 // Store writes metadata, logs, and artifacts atomically into the cache directory.
+// It stages all files in a temporary directory inside CacheDir and commits via
+// an atomic filesystem rename (rename(2) on POSIX), preventing cache poisoning
+// from partial writes or concurrent store races (ADR-0008).
 func (m *Manager) Store(hash, taskName string, exitCode int, duration time.Duration, output []byte, outputPaths []string) error {
-	taskCacheDir := filepath.Join(m.CacheDir, hash)
-	if err := os.MkdirAll(taskCacheDir, 0755); err != nil {
-		return fmt.Errorf("creating cache dir: %w", err)
+	if err := os.MkdirAll(m.CacheDir, 0755); err != nil {
+		return fmt.Errorf("creating cache root dir: %w", err)
 	}
 
-	// 1. Write log output
-	logFile := filepath.Join(taskCacheDir, "output.log")
+	taskCacheDir := filepath.Join(m.CacheDir, hash)
+
+	// If entry is already valid and complete, no need to overwrite
+	if m.Has(hash) {
+		return nil
+	}
+
+	// 1. Stage in an isolated temporary directory on the SAME filesystem mount
+	stagingDir := filepath.Join(m.CacheDir, fmt.Sprintf("tmp-%s-%d-%d", hash, os.Getpid(), time.Now().UnixNano()))
+	if err := os.MkdirAll(stagingDir, 0755); err != nil {
+		return fmt.Errorf("creating staging dir: %w", err)
+	}
+
+	committed := false
+	defer func() {
+		if !committed {
+			_ = os.RemoveAll(stagingDir)
+		}
+	}()
+
+	// 2. Write log output
+	logFile := filepath.Join(stagingDir, "output.log")
 	if err := os.WriteFile(logFile, output, 0644); err != nil {
 		return fmt.Errorf("writing cache log: %w", err)
 	}
 
-	// 2. Copy artifacts to cache
-	artifactsDir := filepath.Join(taskCacheDir, "artifacts")
+	// 3. Copy artifacts to staging
+	artifactsDir := filepath.Join(stagingDir, "artifacts")
 	var savedArtifacts []string
 	for _, relPath := range outputPaths {
 		src := filepath.Join(m.BaseDir, relPath)
@@ -81,7 +104,7 @@ func (m *Manager) Store(hash, taskName string, exitCode int, duration time.Durat
 		}
 	}
 
-	// 3. Write metadata JSON
+	// 4. Write metadata JSON
 	entry := Entry{
 		Hash:       hash,
 		TaskName:   taskName,
@@ -96,8 +119,29 @@ func (m *Manager) Store(hash, taskName string, exitCode int, duration time.Durat
 		return err
 	}
 
-	metaFile := filepath.Join(taskCacheDir, "meta.json")
-	return os.WriteFile(metaFile, metaBytes, 0644)
+	metaFile := filepath.Join(stagingDir, "meta.json")
+	if err := os.WriteFile(metaFile, metaBytes, 0644); err != nil {
+		return fmt.Errorf("writing cache meta: %w", err)
+	}
+
+	// 5. Commit atomically via filesystem rename
+	if err := os.Rename(stagingDir, taskCacheDir); err != nil {
+		// Handle concurrent write collision: if another process already committed
+		// the same content-addressed hash, discard staging and return success
+		if m.Has(hash) {
+			committed = false // cleanup stagingDir in defer
+			return nil
+		}
+		// If taskCacheDir exists in a broken state from previous non-atomic crash,
+		// remove it and retry rename once
+		_ = os.RemoveAll(taskCacheDir)
+		if retryErr := os.Rename(stagingDir, taskCacheDir); retryErr != nil {
+			return fmt.Errorf("committing cache entry: %w", retryErr)
+		}
+	}
+
+	committed = true
+	return nil
 }
 
 // Restore restores cached outputs and returns metadata and log output.
@@ -156,6 +200,16 @@ func (m *Manager) Prune(maxAge time.Duration) (int, error) {
 			continue
 		}
 		entryDir := filepath.Join(m.CacheDir, d.Name())
+
+		// Clean up abandoned staging directories older than 5 minutes or older than cutoff
+		if strings.HasPrefix(d.Name(), "tmp-") {
+			info, err := d.Info()
+			if err == nil && (time.Since(info.ModTime()) > 5*time.Minute || info.ModTime().Before(cutoff)) {
+				_ = os.RemoveAll(entryDir)
+			}
+			continue
+		}
+
 		metaFile := filepath.Join(entryDir, "meta.json")
 
 		data, err := os.ReadFile(metaFile)
