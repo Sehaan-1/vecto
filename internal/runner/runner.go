@@ -281,6 +281,10 @@ func (r *Runner) runTask(
 // setProcAttrs (platform-specific) places the child in its own process group
 // so that terminateProcessGroup can cleanly signal or terminate all descendants.
 func (r *Runner) executeCommand(ctx context.Context, cmdStr string) ([]byte, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
 		cmd = exec.Command("cmd.exe", "/C", cmdStr)
@@ -289,6 +293,7 @@ func (r *Runner) executeCommand(ctx context.Context, cmdStr string) ([]byte, err
 	}
 
 	cmd.Dir = r.BaseDir
+	cmd.WaitDelay = 1 * time.Second
 	setProcAttrs(cmd) // platform-specific process group setup
 
 	var buf bytes.Buffer

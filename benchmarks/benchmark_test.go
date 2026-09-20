@@ -300,7 +300,7 @@ func TestBenchmark_FailureTeardown(t *testing.T) {
 	sleepCmd := "sleep 5"
 	failCmd := "false"
 	if runtime.GOOS == "windows" {
-		sleepCmd = "ping 127.0.0.1 -n 6 > nul"
+		sleepCmd = "powershell -NoProfile -Command \"Start-Sleep -Seconds 5\""
 		failCmd = "cmd /c exit 1"
 	}
 
@@ -338,7 +338,7 @@ func TestBenchmark_FailureTeardown(t *testing.T) {
 	fmt.Printf("Fail-Fast Cancellation (Teardown latency): %v (Clean abort of 3 slow sibling tasks)\n", fastDuration)
 	fmt.Printf("Keep-Going Execution:                      %v (Independent tasks ran to completion)\n\n", keepDuration)
 
-	if fastDuration > 3*time.Second {
+	if fastDuration > 4*time.Second {
 		t.Errorf("Fail-fast teardown took suspiciously long: %v", fastDuration)
 	}
 }
