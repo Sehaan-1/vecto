@@ -1,0 +1,9 @@
+version: "1"
+
+# Vecto builds itself with vecto (ADR-0014). Keep every command portable:
+# this file runs on Windows, macOS, and Linux CI runners.
+tasks:
+  build:
+    command: "go build -o bin/vecto ./cmd/vecto"
+    inputs: ["cmd/**/*.go", "internal/**/*.go", "go.mod", "go.sum"]
+    outputs: ["bin/vecto"]
