@@ -17,3 +17,6 @@
 | [ADR-0013](0013-disk-remote-stub-and-proof.md) | What proves the shared cache is real | accepted | |
 | [ADR-0014](0014-dogfood-ci-build.md) | How our pipeline shows we trust our tool | accepted | |
 | [ADR-0015](0015-honest-benchmark-comparison.md) | How the speed comparison stays honest | accepted | |
+| [ADR-0016](0016-readme-top-packaging.md) | What the top of the README shows | accepted | |
+| [ADR-0017](0017-ci-lint-and-coverage.md) | How CI keeps its green promise | accepted | |
+| [ADR-0018](0018-resume-bullets.md) | What resume facts we can honestly claim | accepted | |
