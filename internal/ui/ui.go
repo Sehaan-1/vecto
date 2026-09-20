@@ -1,9 +1,11 @@
 package ui
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"sync"
 	"time"
 )
@@ -177,4 +179,77 @@ func (r *Reporter) Summary(totalDuration time.Duration) {
 	fmt.Fprintf(r.writer, "Tasks:    %d total (%d cached, %d executed, %d failed, %d skipped)\n",
 		len(r.tasks), cached, success, failed, skipped)
 	fmt.Fprintf(r.writer, "Duration: %.2fs\n", totalDuration.Seconds())
+}
+
+// TaskJSONResult represents a single task execution entry in the JSON report.
+type TaskJSONResult struct {
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	DurationMs int64  `json:"duration_ms"`
+	Error      string `json:"error,omitempty"`
+}
+
+// RunJSONSummary represents the full execution summary for CI integration.
+type RunJSONSummary struct {
+	Success    bool             `json:"success"`
+	TotalTasks int              `json:"total_tasks"`
+	Cached     int              `json:"cached"`
+	Executed   int              `json:"executed"`
+	Failed     int              `json:"failed"`
+	Skipped    int              `json:"skipped"`
+	DurationMs int64            `json:"duration_ms"`
+	Tasks      []TaskJSONResult `json:"tasks"`
+}
+
+// JSONSummary returns a structured, machine-readable JSON representation of the run.
+func (r *Reporter) JSONSummary(totalDuration time.Duration) ([]byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var success, cached, failed, skipped int
+	names := make([]string, 0, len(r.tasks))
+	for n := range r.tasks {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	taskResults := make([]TaskJSONResult, 0, len(names))
+	for _, n := range names {
+		t := r.tasks[n]
+		var errStr string
+		if t.Err != nil {
+			errStr = t.Err.Error()
+		}
+
+		taskResults = append(taskResults, TaskJSONResult{
+			Name:       t.Name,
+			Status:     string(t.Status),
+			DurationMs: t.Duration.Milliseconds(),
+			Error:      errStr,
+		})
+
+		switch t.Status {
+		case StatusSuccess:
+			success++
+		case StatusCached:
+			cached++
+		case StatusFailed:
+			failed++
+		case StatusSkipped:
+			skipped++
+		}
+	}
+
+	summary := RunJSONSummary{
+		Success:    failed == 0,
+		TotalTasks: len(r.tasks),
+		Cached:     cached,
+		Executed:   success,
+		Failed:     failed,
+		Skipped:    skipped,
+		DurationMs: totalDuration.Milliseconds(),
+		Tasks:      taskResults,
+	}
+
+	return json.MarshalIndent(summary, "", "  ")
 }

@@ -134,6 +134,69 @@ func TestHash_TransitiveDependencyHashing(t *testing.T) {
 	}
 }
 
+func TestGlob_RecursiveDoubleStar(t *testing.T) {
+	tempDir := t.TempDir()
+
+	_ = os.MkdirAll(filepath.Join(tempDir, "src", "pkg", "deep"), 0755)
+	_ = os.WriteFile(filepath.Join(tempDir, "src", "pkg", "deep", "util.go"), []byte("package deep"), 0644)
+	_ = os.WriteFile(filepath.Join(tempDir, "src", "main.go"), []byte("package main"), 0644)
+	_ = os.WriteFile(filepath.Join(tempDir, "root.txt"), []byte("root"), 0644)
+
+	h1, err := hash.ComputeTaskFingerprint(tempDir, "echo 1", []string{"src/**/*.go"}, nil, nil)
+	if err != nil {
+		t.Fatalf("ComputeTaskFingerprint failed: %v", err)
+	}
+
+	// Editing deeply nested file must change the fingerprint
+	_ = os.WriteFile(filepath.Join(tempDir, "src", "pkg", "deep", "util.go"), []byte("package deep // edit"), 0644)
+	h2, err := hash.ComputeTaskFingerprint(tempDir, "echo 1", []string{"src/**/*.go"}, nil, nil)
+	if err != nil {
+		t.Fatalf("ComputeTaskFingerprint failed: %v", err)
+	}
+	if h1 == h2 {
+		t.Errorf("expected hash to change when nested file changed")
+	}
+
+	// Editing root.txt (not matching src/**/*.go) should NOT change fingerprint
+	_ = os.WriteFile(filepath.Join(tempDir, "root.txt"), []byte("root edit"), 0644)
+	h3, _ := hash.ComputeTaskFingerprint(tempDir, "echo 1", []string{"src/**/*.go"}, nil, nil)
+	if h2 != h3 {
+		t.Errorf("unmatched file edit changed fingerprint!")
+	}
+}
+
+func TestGlob_IgnorePatterns(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// Default ignored dir: node_modules
+	_ = os.MkdirAll(filepath.Join(tempDir, "node_modules", "dep"), 0755)
+	_ = os.WriteFile(filepath.Join(tempDir, "node_modules", "dep", "index.js"), []byte("console.log()"), 0644)
+
+	_ = os.WriteFile(filepath.Join(tempDir, "app.js"), []byte("console.log('app')"), 0644)
+
+	h1, err := hash.ComputeTaskFingerprint(tempDir, "node app.js", []string{"**/*.js"}, nil, nil)
+	if err != nil {
+		t.Fatalf("hashing failed: %v", err)
+	}
+
+	// Modifying file inside node_modules must NOT change fingerprint because it is ignored by default
+	_ = os.WriteFile(filepath.Join(tempDir, "node_modules", "dep", "index.js"), []byte("console.log('tampered')"), 0644)
+	h2, _ := hash.ComputeTaskFingerprint(tempDir, "node app.js", []string{"**/*.js"}, nil, nil)
+	if h1 != h2 {
+		t.Errorf("node_modules was not ignored!")
+	}
+
+	// Custom .vectoignore
+	_ = os.WriteFile(filepath.Join(tempDir, ".vectoignore"), []byte("*.tmp\nscratch/**\n"), 0644)
+	_ = os.MkdirAll(filepath.Join(tempDir, "scratch"), 0755)
+	_ = os.WriteFile(filepath.Join(tempDir, "scratch", "test.js"), []byte("scratch js"), 0644)
+
+	h3, _ := hash.ComputeTaskFingerprint(tempDir, "node app.js", []string{"**/*.js"}, nil, nil)
+	if h1 != h3 {
+		t.Errorf(".vectoignore rule was not honored!")
+	}
+}
+
 func BenchmarkHash_100Files(b *testing.B) {
 	tempDir := b.TempDir()
 	for i := 0; i < 100; i++ {

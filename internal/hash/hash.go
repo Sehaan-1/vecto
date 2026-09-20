@@ -81,6 +81,7 @@ func resolveInputFiles(baseDir string, globs []string) ([]string, error) {
 		return nil, nil
 	}
 
+	ignores := LoadIgnorePatterns(baseDir)
 	fileSet := make(map[string]bool)
 
 	for _, rawPattern := range globs {
@@ -92,22 +93,27 @@ func resolveInputFiles(baseDir string, globs []string) ([]string, error) {
 				if err != nil {
 					return err
 				}
+				rel, err := filepath.Rel(baseDir, path)
+				if err != nil {
+					return err
+				}
+				if rel == "." {
+					return nil
+				}
+				relSlash := filepath.ToSlash(rel)
+
 				if info.IsDir() {
-					baseName := filepath.Base(path)
-					if baseName == ".git" || baseName == ".vecto" || baseName == "bin" {
+					if IsIgnored(relSlash, ignores) {
 						return filepath.SkipDir
 					}
 					return nil
 				}
 
-				rel, err := filepath.Rel(baseDir, path)
-				if err != nil {
-					return err
+				if IsIgnored(relSlash, ignores) {
+					return nil
 				}
-				relSlash := filepath.ToSlash(rel)
 
-				matched, err := matchGlob(pattern, relSlash)
-				if err == nil && matched {
+				if MatchGlob(pattern, relSlash) {
 					fileSet[relSlash] = true
 				}
 				return nil
@@ -127,16 +133,23 @@ func resolveInputFiles(baseDir string, globs []string) ([]string, error) {
 					if err != nil {
 						return err
 					}
+					rel, err := filepath.Rel(baseDir, path)
+					if err != nil {
+						return err
+					}
+					if rel == "." {
+						return nil
+					}
+					relSlash := filepath.ToSlash(rel)
+
 					if info.IsDir() {
-						baseName := filepath.Base(path)
-						if baseName == ".git" || baseName == ".vecto" || baseName == "bin" {
+						if IsIgnored(relSlash, ignores) {
 							return filepath.SkipDir
 						}
 						return nil
 					}
-					rel, err := filepath.Rel(baseDir, path)
-					if err == nil {
-						fileSet[filepath.ToSlash(rel)] = true
+					if !IsIgnored(relSlash, ignores) {
+						fileSet[relSlash] = true
 					}
 					return nil
 				})
@@ -146,7 +159,10 @@ func resolveInputFiles(baseDir string, globs []string) ([]string, error) {
 			} else {
 				rel, err := filepath.Rel(baseDir, fullPath)
 				if err == nil {
-					fileSet[filepath.ToSlash(rel)] = true
+					relSlash := filepath.ToSlash(rel)
+					if !IsIgnored(relSlash, ignores) {
+						fileSet[relSlash] = true
+					}
 				}
 			}
 		}
@@ -156,34 +172,6 @@ func resolveInputFiles(baseDir string, globs []string) ([]string, error) {
 	for f := range fileSet {
 		result = append(result, f)
 	}
+	sort.Strings(result)
 	return result, nil
-}
-
-func matchGlob(pattern, path string) (bool, error) {
-	pattern = filepath.ToSlash(pattern)
-	path = filepath.ToSlash(path)
-
-	// Case 1: **/*.ext (matches root file.ext OR deeply/nested/file.ext)
-	if strings.HasPrefix(pattern, "**/") {
-		suffixPattern := strings.TrimPrefix(pattern, "**/")
-		matched, err := filepath.Match(suffixPattern, filepath.Base(path))
-		if err == nil && matched {
-			return true, nil
-		}
-	}
-
-	// Case 2: dir/**/file.ext
-	if strings.Contains(pattern, "/**/") {
-		parts := strings.SplitN(pattern, "/**/", 2)
-		prefix := parts[0]
-		suffix := parts[1]
-		if prefix != "" && !strings.HasPrefix(path, prefix+"/") && path != prefix {
-			return false, nil
-		}
-		matched, err := filepath.Match(suffix, filepath.Base(path))
-		return matched, err
-	}
-
-	// Case 3: Standard single-level or exact glob
-	return filepath.Match(pattern, path)
 }

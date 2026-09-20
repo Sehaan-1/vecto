@@ -9,6 +9,11 @@ bin/
 # Test artifacts & caches
 .vecto/
 dist/
+__pycache__/
+*.py[cod]
+benchmarks/multi_lang_project/generated/
+benchmarks/multi_lang_project/bin/
+benchmarks/multi_lang_project/dist/
 
 # Agent & local metadata
 .claude/

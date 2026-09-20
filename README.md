@@ -1,6 +1,6 @@
 # Vecto
 
-A high-performance, language-agnostic Directed Acyclic Graph (DAG) task runner and content-addressable build caching engine written in Go.
+A language-agnostic Directed Acyclic Graph (DAG) task runner and content-addressed build cache written in Go.
 
 [![CI](https://github.com/Sehaan-1/vecto/actions/workflows/ci.yml/badge.svg)](https://github.com/Sehaan-1/vecto/actions/workflows/ci.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/Sehaan-1/vecto)](https://goreportcard.com/report/github.com/Sehaan-1/vecto)
@@ -10,31 +10,47 @@ A high-performance, language-agnostic Directed Acyclic Graph (DAG) task runner a
 
 ## Overview
 
-In modern software projects, build and test pipelines often waste significant time running independent tasks sequentially, or re-executing steps whose inputs have not changed.
+In multi-language projects, build scripts and CI pipelines frequently repeat work whose inputs have not changed, or run independent steps serially due to rigid phase definitions.
 
-**Vecto** solves this by combining formal graph theory with industrial-grade systems engineering:
-1. **Reactive Event-Driven Scheduler:** Tasks fire the instant their dependencies complete via a dependency-counter queue, eliminating head-of-line blocking from slow sibling tasks.
-2. **Cryptographic Content-Addressed Caching:** Deterministic SHA-256 fingerprinting calculated across commands, input file contents, environment variables, and **transitive upstream dependency fingerprints**.
-3. **Atomic Cache Staging (`os.Rename`):** Cache writes are isolated in temporary staging directories on the same filesystem and committed atomically, preventing cache poisoning from `SIGINT` cancellations or concurrent runs.
-4. **Two-Phase Process Teardown (`SIGTERM` $\to$ `SIGKILL`):** Subprocesses run in dedicated OS process groups (`Setpgid: true`). On cancellation, `SIGTERM` is broadcast across the process tree giving compilers a grace period to flush disk buffers before escalating to `SIGKILL`.
-5. **Developer Experience & Inspection:** Native graph visualization export (`mermaid` and `dot`), predictive `--dry-run` execution planning, and dynamic CLI argument passthrough (`--`).
+**Vecto** provides a single, zero-dependency binary that:
+1. **Dispatches tasks as dependencies resolve:** Tasks fire as soon as their direct prerequisites finish, rather than waiting for an entire execution phase or sibling task to complete.
+2. **Computes content-addressed fingerprints:** Deterministic SHA-256 hashes are calculated across task commands, input file contents (supporting `**` recursive globs and ignore files), declared environment variables, and transitive upstream hashes.
+3. **Guarantees cache integrity:**
+   - **Schema versioning:** Cache metadata tracks schema versions, cleanly invalidating older or incompatible formats.
+   - **Integrity validation:** Output logs and artifacts are verified against recorded SHA-256 hashes and byte sizes on restore, preventing truncated or corrupted cache entries from entering workspaces.
+   - **Atomic staging:** Cache entries are written into isolated staging directories on the same filesystem and committed via atomic filesystem rename (`os.Rename`), protected by cross-platform file locking (`flock` on Unix, Win32 `LockFileEx` on Windows).
+   - **Remote cache support:** Built-in HTTP REST remote cache client for sharing cache entries across team members and CI pipelines.
+4. **Manages subprocess lifecycles:** Subprocesses are launched in dedicated process groups. On cancellation, Vecto broadcasts termination signals across the entire process tree (`SIGTERM` with 1-second `SIGKILL` escalation on Unix, process-tree termination on Windows).
+5. **Surfaces developer tooling:** Native graph export to Mermaid and Graphviz DOT, predictive `--dry-run` inspection, dynamic flag forwarding (`--`), structured logging (`slog`), and machine-readable JSON summary output (`--json`) for CI.
 
 ---
 
-## Benchmarks & Performance
+## Empirical Benchmarks
 
-Measured on an Intel Core i7-1355U (12 threads) with Go 1.22+ (raw benchmark output committed in [docs/benchmarks.txt](docs/benchmarks.txt) and automated in CI on every push):
+The following benchmarks were measured on a 13th Gen Intel Core i7-1355U (12 threads) running on a realistic multi-language repository containing Go, Python, and JavaScript services ([detailed methodology & reproduction steps in `docs/benchmarks.md`](docs/benchmarks.md)):
 
-| Benchmark | Operations / Iterations | Latency per Op | Memory / Allocs |
+### Vecto vs. GNU Make
+
+| Scenario | GNU Make (`mingw32-make`) | Vecto | Comparison / Impact |
 |---|---|---|---|
-| **Cache Replay / Restore** | 13,464 ops | **~0.08 ms** (`84 µs`) | 2.8 KB / 16 allocs |
-| **Topological Sort (1,000 nodes)** | 7,290 ops | **~0.16 ms** (`163 µs`) | 87 KB / 7 allocs |
-| **Execution Layer Partitioning (1,000 nodes)** | 4,596 ops | **~0.24 ms** (`243 µs`) | 165 KB / 527 allocs |
-| **SHA-256 Streaming Hash (100 files)** | 139 ops | **~9.1 ms** | 3.5 MB / 1,438 allocs |
+| **Clean Cold Build** | `3.63s` | `1.14s` | **3.18x faster** (automatic dependency parallelism) |
+| **Incremental Build (1 file modified)** | `1.50s` | `1.10s` | **1.37x faster** (26.9% wall-clock time saved) |
+| **Hot Replay (0 files modified)** | `773 ms` | `17.5 ms` | **44.2x faster** (content-addressed cache hit) |
+| **Parallel Cold Build (`make -j`)** | `1.06s` | `1.18s` | **0.90x** (within 120ms of Make `-j`, with caching enabled) |
 
-To run benchmarks locally:
+### Micro-Benchmarks & Latency
+
+| Benchmark | Latency / Throughput | Notes |
+|---|---|---|
+| **Cache Hit Latency (7 tasks)** | **~8.0 ms** median ($p_{50}$), $10.7\text{ ms}$ ($p_{95}$) | Measured over 100 consecutive full replays |
+| **Topological Sort (1,000 tasks)** | **< 0.5 ms** | In-place min-heap Kahn's algorithm |
+| **Topological Sort (10,000 tasks)** | **~2.8 ms** | O((V+E) log V) with zero interface allocations |
+| **Cancellation Teardown** | **~565 ms** | Subprocesses terminated promptly on sibling failure |
+
+To reproduce locally:
 ```bash
-go test -run='^$' -bench=. -benchmem ./internal/...
+go test -v ./benchmarks -run TestBenchmark_MultiLang_Comparison
+go test -run='^$' -bench=. -benchmem ./...
 ```
 
 ---
@@ -48,7 +64,7 @@ go test -run='^$' -bench=. -benchmem ./internal/...
                                   │
                                   ▼
                          ┌─────────────────┐
-                         │ internal/config │
+                         │ internal/config │  (Schema Validation & Typo Diagnostics)
                          └────────┬────────┘
                                   │
                                   ▼
@@ -61,62 +77,56 @@ go test -run='^$' -bench=. -benchmem ./internal/...
          ▼                                                 ▼
 ┌──────────────────┐                              ┌──────────────────┐
 │  internal/hash   │                              │  internal/cache  │
-│ (SHA-256 Finger) │                              │ (Atomic Staging) │
+│ (SHA-256 + Glob) │                              │ (Atomic & Lock)  │
 └────────┬─────────┘                              └────────┬─────────┘
          │                                                 │
          └────────────────────────┬────────────────────────┘
                                   │
                                   ▼
                          ┌─────────────────┐
-                         │ internal/runner │  (Reactive Scheduler & Two-Phase Teardown)
+                         │ internal/runner │  (Event-Driven Dispatch & Tree Teardown)
                          └────────┬────────┘
                                   │
                                   ▼
                          ┌─────────────────┐
-                         │   internal/ui   │  (Thread-Safe Terminal Dashboard)
+                         │   internal/ui   │  (Dashboard, JSON Summary & Slog)
                          └─────────────────┘
 ```
 
-### 1. Reactive Event-Driven Scheduler (No Head-of-Line Blocking)
-Unlike naive batch/layer task runners where an entire layer must finish before any task in the next layer begins, Vecto tracks a `pendingDeps[task]` counter. When a task completes, it decrements the counter for all its direct dependents. The instant a task's counter hits zero, it enters the ready queue and is dispatched to an available worker goroutine.
+### 1. Event-Driven Scheduling
+Unlike layer-based task runners that block until all tasks in an entire phase finish, Vecto tracks a `pendingDeps[task]` counter. The instant a task completes, it decrements the counter for all its direct dependents. When a task's counter reaches zero, it enters the ready queue immediately.
 
-### 2. Atomic Directory Staging (`os.Rename`)
-To eliminate cache corruption if a build is killed mid-write:
-- Output logs, metadata, and artifacts are written into `.vecto/cache/tmp-<hash>-<pid>-<timestamp>` on the same filesystem volume.
-- Once all writes and checksums succeed, the entry is committed via an atomic filesystem rename (`os.Rename`).
-- A cache entry is either 100% complete or does not exist at all.
+### 2. Atomic Directory Staging and File Locking
+To ensure cache entries are never written partially:
+- Outputs, metadata, and logs are written into `.vecto/cache/tmp-<hash>-<pid>-<timestamp>` on the same filesystem volume.
+- Output artifacts and logs have their SHA-256 hashes recorded in `meta.json`.
+- A cross-platform file lock is held while committing the directory via an atomic filesystem rename (`os.Rename`).
+- During `Restore()`, artifact sizes and checksums are verified before files are restored to the workspace.
 
-### 3. Two-Phase Signal Escalation Ladder
-When a sibling task fails or the runner context is cancelled:
-1. `terminateProcessGroup` broadcasts `syscall.SIGTERM` to `-pgid` (the entire process tree, not just `/bin/sh`).
-2. Child compilers and test suites can catch `SIGTERM`, flush disk buffers, and cleanly shut down.
-3. If the process does not terminate within a 1-second grace window, Vecto escalates to `syscall.SIGKILL`.
-
-### 4. Transitive Content Fingerprinting
-If library `A` changes, application `B` (which depends on `A`) must rebuild even if `B`'s own source files did not change:
-$$\text{Fingerprint}(B) = \text{SHA-256}(\text{Cmd}_B + \text{Inputs}_B + \text{Env}_B + \text{Fingerprint}(A))$$
+### 3. Subprocess Group Teardown
+When a task fails or the run context is cancelled:
+1. On Unix, `syscall.SIGTERM` is broadcast to `-pgid` (the process group), allowing compilers and child processes a 1-second grace window to flush buffers and release file locks before escalating to `syscall.SIGKILL`.
+2. On Windows, process tree termination is performed via `taskkill /F /T`, terminating child processes and releasing standard I/O handles promptly.
 
 ---
 
-## What Vecto Is vs. What It Is Not
+## Comparison
 
-| Feature | Vecto | Turborepo | Bazel |
-|---|---|---|---|
-| **Language Ecosystem** | Language-Agnostic | Node.js / TS focus | Multi-language (Starlark) |
-| **Runtime Dependencies** | **None** (single standalone binary) | Node.js / Rust | Java / Python / C++ |
-| **Configuration** | Flat `vecto.yaml` | `turbo.json` | `WORKSPACE` + `BUILD` |
-| **Process Isolation** | OS Process Groups & Two-Phase Kill | Cross-platform kill | Chroot / sandbox containers |
-| **Cache Consistency** | Atomic Directory Staging (`os.Rename`) | Tarball unpacking | Content-addressed CAS |
-| **Distributed Workers** | No (Single-machine focus) | Vercel Remote Cache | Remote Build Execution (RBE) |
-
-**Vecto is designed for:** Teams that want fast, reproducible, and cached task pipelines across mixed languages (Go, Python, Rust, Node, C++) without the setup complexity of Bazel or the JavaScript-centric coupling of Turborepo.
+| Feature | GNU Make | Vecto | Turborepo | Bazel |
+|---|---|---|---|---|
+| **Language Ecosystem** | Any | Any (Language-Agnostic) | Node.js / JS focus | Multi-language (Starlark) |
+| **Dependencies** | C compiler / binary | Single binary (Go, zero deps) | Node.js / Rust binary | Java, Python, C++ |
+| **Cache Key Calculation** | File timestamps (`mtime`) | SHA-256 content hashes | Hash across inputs & deps | Content-addressed CAS |
+| **Atomic Cache Commits** | No | Yes (`os.Rename` + staging) | Yes (tarball archive) | Yes |
+| **Corruption Detection** | No | Yes (SHA-256 verification) | Archive checksums | CAS merkle-tree |
+| **Remote Cache** | No | Yes (HTTP REST) | Yes (Vercel remote cache) | Yes (gRPC RBE) |
+| **CI Integration** | Text output | JSON summary (`--json`) | JSON / Turborepo cloud | BEP (Build Event Protocol) |
 
 ---
 
 ## Quickstart
 
-### 1. Installation
-Clone and build the standalone binary:
+### 1. Build from Source
 ```bash
 git clone https://github.com/Sehaan-1/vecto.git
 cd vecto
@@ -124,7 +134,7 @@ go build -o bin/vecto ./cmd/vecto
 ```
 
 ### 2. Configuration (`vecto.yaml`)
-Run `vecto init` or create a `vecto.yaml` in your project root:
+Create `vecto.yaml` in your repository root:
 ```yaml
 version: "1"
 
@@ -132,35 +142,44 @@ tasks:
   codegen:
     command: "go run ./scripts/generate.go"
     inputs: ["schema.json"]
+    outputs: ["generated/routes.go"]
 
   lint:
     command: "golangci-lint run"
     inputs: ["**/*.go"]
 
+  test:
+    command: "go test ./..."
+    deps: ["codegen"]
+    inputs: ["**/*.go", "generated/routes.go"]
+
   build:
     command: "go build -o bin/app ."
-    deps: ["codegen", "lint"]
+    deps: ["test", "lint"]
     inputs: ["**/*.go"]
     outputs: ["bin/app"]
 ```
 
-### 3. CLI Commands
+### 3. CLI Usage
 
 ```bash
-# Run a target task and all of its dependencies
+# Run a target task and its dependencies
 vecto run build
 
-# Preview execution plan and cache hits without running shell commands
+# Preview execution plan and cache status without executing commands
 vecto run --dry-run build
 
-# Pass dynamic flags directly through to the underlying task command
+# Output machine-readable JSON summary for CI pipelines
+vecto run --json build
+
+# Forward dynamic arguments to underlying task commands
 vecto run test -- -v -run TestUserAuth
 
-# Export graph topology as Mermaid.js (for GitHub markdown) or Graphviz DOT
+# Export graph topology as Mermaid.js or Graphviz DOT
 vecto graph --format=mermaid
 vecto graph --format=dot build
 
-# Run with custom concurrency (default: CPU cores)
+# Run with custom concurrency (default: CPU threads)
 vecto run --concurrency 4
 
 # Keep unaffected independent tasks running on failure
@@ -172,42 +191,23 @@ vecto run --force
 # Stream command stdout/stderr for all tasks
 vecto run --verbose build
 
-# List declared tasks and dependency relationships
-vecto list
-
-# Clear entire local cache storage (.vecto/cache)
+# Clear or prune local cache
 vecto clean
-
-# Prune cache entries older than a duration (e.g. 24h, 7d)
 vecto clean --max-age 24h
 ```
 
 ---
 
-## Testing & Quality
+## Configuration Diagnostics
 
-Vecto enforces strict race detection across all internal packages:
-```bash
-go test -v -race ./...
-```
-Continuous integration is automated via GitHub Actions on every push and pull request.
-
----
-
-## Architecture Decision Records (ADRs)
-
-Key architectural choices are formally documented in [`docs/adr/`](docs/adr/):
-- [ADR-0001: Task definitions in root YAML](docs/adr/0001-task-definitions-in-root-yaml.md)
-- [ADR-0002: Live terminal status dashboard](docs/adr/0002-live-terminal-status-dashboard.md)
-- [ADR-0003: Hybrid cache storage directory](docs/adr/0003-hybrid-cache-storage-directory.md)
-- [ADR-0004: Cryptographic input hashing](docs/adr/0004-cryptographic-input-hashing.md)
-- [ADR-0005: Task failure lifecycle and keep-going](docs/adr/0005-fail-fast-with-keep-going.md)
-- [ADR-0006: Reactive event-driven scheduler](docs/adr/0006-reactive-event-driven-scheduler.md)
-- [ADR-0007: Process group isolation and two-phase teardown](docs/adr/0007-process-group-isolation.md)
-- [ADR-0008: Atomic cache staging via staging directory and rename](docs/adr/0008-atomic-cache-staging.md)
-- [ADR-0009: Graph inspection and dry-run execution mode](docs/adr/0009-graph-inspection-and-dry-run.md)
+Vecto validates task definitions at startup:
+- **Typo suggestions:** If a task references an unknown dependency, Vecto calculates Levenshtein distances and suggests the closest match (e.g. `Task "test" depends on "compyle". Did you mean "compile"?`).
+- **Self-dependencies & cycles:** Cycle paths are reported explicitly (`Cycle detected: A -> B -> C -> A`).
+- **Group tasks:** Tasks that define dependencies without commands are supported as logical group targets.
+- **Overlapping paths:** Warnings are emitted if an output file is declared as an input to the same task.
 
 ---
 
 ## License
+
 MIT License. See [LICENSE](LICENSE) for details.

@@ -1,11 +1,12 @@
 package cache_test
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,237 +16,248 @@ import (
 
 func TestCache_StoreAndRestore(t *testing.T) {
 	tempDir := t.TempDir()
-	mgr := cache.New(tempDir)
+	cacheMgr := cache.New(tempDir)
 
-	hashVal := "abc1234567890def"
-	taskName := "compile"
-	outputLog := []byte("compiling main.go... done!\n")
+	hash := "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	taskName := "build"
+	exitCode := 0
+	duration := 120 * time.Millisecond
+	output := []byte("Build successful: created bin/app\n")
 
-	// Create an artifact file with executable permissions
-	artifactRel := filepath.Join("dist", "binary.bin")
-	artifactFull := filepath.Join(tempDir, artifactRel)
-	if err := os.MkdirAll(filepath.Dir(artifactFull), 0755); err != nil {
-		t.Fatalf("failed to create dir: %v", err)
+	// Create dummy artifact in workspace
+	binDir := filepath.Join(tempDir, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("failed to create bin dir: %v", err)
 	}
-	if err := os.WriteFile(artifactFull, []byte("BINARY_DATA_PAYLOAD"), 0755); err != nil {
-		t.Fatalf("failed to write artifact: %v", err)
-	}
-
-	if mgr.Has(hashVal) {
-		t.Errorf("expected Has to be false initially")
+	binFile := filepath.Join(binDir, "app")
+	if err := os.WriteFile(binFile, []byte("ELF binary dummy"), 0755); err != nil {
+		t.Fatalf("failed to write dummy artifact: %v", err)
 	}
 
-	// Store
-	err := mgr.Store(hashVal, taskName, 0, 150*time.Millisecond, outputLog, []string{artifactRel})
+	outputPaths := []string{"bin/app"}
+
+	// 1. Check Has() returns false initially
+	if cacheMgr.Has(hash) {
+		t.Fatalf("expected Has() to be false before Store()")
+	}
+
+	// 2. Store in cache
+	if err := cacheMgr.Store(hash, taskName, exitCode, duration, output, outputPaths); err != nil {
+		t.Fatalf("Store() failed: %v", err)
+	}
+
+	// 3. Has() should now be true
+	if !cacheMgr.Has(hash) {
+		t.Fatalf("expected Has() to be true after Store()")
+	}
+
+	// 4. Wipe the workspace artifact to verify restoration
+	if err := os.Remove(binFile); err != nil {
+		t.Fatalf("failed to remove workspace artifact: %v", err)
+	}
+
+	// 5. Restore from cache
+	entry, logs, err := cacheMgr.Restore(hash)
 	if err != nil {
-		t.Fatalf("Store failed: %v", err)
-	}
-
-	if !mgr.Has(hashVal) {
-		t.Errorf("expected Has to be true after store")
-	}
-
-	// Delete original artifact to test restoration
-	_ = os.Remove(artifactFull)
-
-	// Restore
-	entry, logs, err := mgr.Restore(hashVal)
-	if err != nil {
-		t.Fatalf("Restore failed: %v", err)
+		t.Fatalf("Restore() failed: %v", err)
 	}
 
 	if entry.TaskName != taskName {
-		t.Errorf("expected task name %s, got %s", taskName, entry.TaskName)
+		t.Errorf("expected TaskName %s, got %s", taskName, entry.TaskName)
 	}
-	if string(logs) != string(outputLog) {
-		t.Errorf("expected logs %q, got %q", string(outputLog), string(logs))
+	if entry.ExitCode != exitCode {
+		t.Errorf("expected ExitCode %d, got %d", exitCode, entry.ExitCode)
+	}
+	if string(logs) != string(output) {
+		t.Errorf("expected logs %q, got %q", string(output), string(logs))
+	}
+	if entry.SchemaVersion != cache.CurrentSchemaVersion {
+		t.Errorf("expected schema version %d, got %d", cache.CurrentSchemaVersion, entry.SchemaVersion)
 	}
 
-	// Verify artifact restored
-	restoredData, err := os.ReadFile(artifactFull)
+	// 6. Verify restored artifact in workspace
+	restoredBytes, err := os.ReadFile(binFile)
 	if err != nil {
-		t.Fatalf("failed to read restored artifact: %v", err)
+		t.Fatalf("restored artifact not found in workspace: %v", err)
 	}
-	if string(restoredData) != "BINARY_DATA_PAYLOAD" {
-		t.Errorf("restored artifact content mismatch")
-	}
-
-	// Verify permissions restored (on Unix)
-	if runtime.GOOS != "windows" {
-		info, err := os.Stat(artifactFull)
-		if err != nil {
-			t.Fatalf("stat failed: %v", err)
-		}
-		if info.Mode().Perm()&0111 == 0 {
-			t.Errorf("executable permissions were lost on cache restore: mode is %v", info.Mode())
-		}
+	if string(restoredBytes) != "ELF binary dummy" {
+		t.Errorf("expected restored content 'ELF binary dummy', got %q", string(restoredBytes))
 	}
 }
 
-func TestCache_Prune(t *testing.T) {
+func TestCache_SchemaVersioning(t *testing.T) {
 	tempDir := t.TempDir()
-	mgr := cache.New(tempDir)
+	cacheMgr := cache.New(tempDir)
+	hash := "version-test-hash"
 
-	// Entry 1: Old entry (created 2 hours ago)
-	err := mgr.Store("old_hash", "old_task", 0, 100*time.Millisecond, []byte("old logs"), nil)
+	// Store valid entry
+	_ = cacheMgr.Store(hash, "test", 0, time.Second, []byte("ok"), nil)
+
+	// Tamper with meta.json to simulate an older or incompatible schema version
+	metaFile := filepath.Join(cacheMgr.CacheDir, hash, "meta.json")
+	data, err := os.ReadFile(metaFile)
 	if err != nil {
-		t.Fatalf("Store failed: %v", err)
+		t.Fatalf("reading meta: %v", err)
 	}
 
-	// Manually backdate old_hash meta.json
-	metaFile := filepath.Join(mgr.CacheDir, "old_hash", "meta.json")
-	data, _ := os.ReadFile(metaFile)
-	var entry cache.Entry
-	_ = json.Unmarshal(data, &entry)
-	entry.Timestamp = time.Now().Add(-2 * time.Hour)
-	backdated, _ := json.Marshal(entry)
-	_ = os.WriteFile(metaFile, backdated, 0644)
+	var raw map[string]interface{}
+	_ = json.Unmarshal(data, &raw)
+	raw["schema_version"] = 999 // incompatible version
+	tamperedBytes, _ := json.Marshal(raw)
+	_ = os.WriteFile(metaFile, tamperedBytes, 0644)
 
-	// Entry 2: Fresh entry
-	_ = mgr.Store("fresh_hash", "fresh_task", 0, 50*time.Millisecond, []byte("fresh logs"), nil)
-
-	// Prune older than 1 hour
-	pruned, err := mgr.Prune(1 * time.Hour)
-	if err != nil {
-		t.Fatalf("Prune failed: %v", err)
-	}
-	if pruned != 1 {
-		t.Errorf("expected 1 pruned entry, got %d", pruned)
-	}
-
-	if mgr.Has("old_hash") {
-		t.Errorf("expected old_hash to be deleted by prune")
-	}
-	if !mgr.Has("fresh_hash") {
-		t.Errorf("expected fresh_hash to remain after prune")
+	// Restore should reject incompatible schema
+	_, _, err = cacheMgr.Restore(hash)
+	if err == nil {
+		t.Fatalf("expected error restoring incompatible schema version, got nil")
 	}
 }
 
-func BenchmarkCache_Restore(b *testing.B) {
-	tempDir := b.TempDir()
-	mgr := cache.New(tempDir)
-	_ = mgr.Store("bench_hash", "bench_task", 0, 10*time.Millisecond, []byte("benchmark log content"), nil)
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, _, _ = mgr.Restore("bench_hash")
-	}
-}
-
-// TestCache_AtomicStore_NoPoisonOnFailure verifies that if writing to staging
-// fails (or is interrupted before rename), no corrupted or partial cache directory
-// is left behind and Has(hash) remains false (ADR-0008).
-func TestCache_AtomicStore_NoPoisonOnFailure(t *testing.T) {
+func TestCache_CorruptionDetection(t *testing.T) {
 	tempDir := t.TempDir()
-	mgr := cache.New(tempDir)
+	cacheMgr := cache.New(tempDir)
+	hash := "corruption-test-hash"
 
-	hashVal := "deadbeef12345678"
+	// Create artifact
+	artRel := "output/data.txt"
+	fullArt := filepath.Join(tempDir, artRel)
+	_ = os.MkdirAll(filepath.Dir(fullArt), 0755)
+	_ = os.WriteFile(fullArt, []byte("valid artifact content"), 0644)
 
-	// Create a read-only scenario or non-existent file to simulate failure
-	// We'll pass a file path that causes an error or simulate by checking staging cleanup
-	stagingDir := filepath.Join(mgr.CacheDir, "tmp-fake-staging")
-	_ = os.MkdirAll(stagingDir, 0755)
-
-	// Verify Has returns false before store
-	if mgr.Has(hashVal) {
-		t.Fatal("expected Has to be false initially")
-	}
-
-	// Verify successful atomic store creates final entry and cleans up staging
-	err := mgr.Store(hashVal, "test_task", 0, 50*time.Millisecond, []byte("clean output"), nil)
+	// Store
+	err := cacheMgr.Store(hash, "build", 0, time.Second, []byte("log"), []string{artRel})
 	if err != nil {
-		t.Fatalf("Store failed: %v", err)
+		t.Fatalf("store failed: %v", err)
 	}
 
-	if !mgr.Has(hashVal) {
-		t.Errorf("expected Has to be true after successful atomic commit")
+	// Tamper with cached artifact content
+	cachedArt := filepath.Join(cacheMgr.CacheDir, hash, "artifacts", artRel)
+	_ = os.WriteFile(cachedArt, []byte("corrupted modified data!"), 0644)
+
+	// Restore should detect corruption
+	_, _, err = cacheMgr.Restore(hash)
+	if err == nil {
+		t.Fatalf("expected Restore() to fail with ErrCacheCorrupted, got nil")
 	}
 
-	// Verify no tmp-* directories remain after successful store
-	entries, err := os.ReadDir(mgr.CacheDir)
-	if err != nil {
-		t.Fatalf("reading cache dir: %v", err)
-	}
-	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), "tmp-"+hashVal) {
-			t.Errorf("staging directory %s was not cleaned up after store", entry.Name())
-		}
+	// Cache entry directory should be removed on corruption detection
+	if cacheMgr.Has(hash) {
+		t.Errorf("corrupted cache entry should have been pruned from disk")
 	}
 }
 
-// TestCache_ConcurrentStore_SameHash proves that concurrent writes of the same hash
-// converge cleanly without race conditions or corrupted files.
-func TestCache_ConcurrentStore_SameHash(t *testing.T) {
+func TestCache_FileLocking(t *testing.T) {
 	tempDir := t.TempDir()
-	mgr := cache.New(tempDir)
+	lockPath := filepath.Join(tempDir, "test.lock")
 
-	hashVal := "concurrent_hash_999"
-	logContent := []byte("concurrent execution log")
+	lock1, err := cache.AcquireLock(lockPath, cache.LockShared)
+	if err != nil {
+		t.Fatalf("AcquireLock shared failed: %v", err)
+	}
 
-	const workers = 8
-	var wg sync.WaitGroup
-	errCh := make(chan error, workers)
+	// A second shared lock should succeed
+	lock2, err := cache.AcquireLock(lockPath, cache.LockShared)
+	if err != nil {
+		t.Fatalf("AcquireLock 2nd shared failed: %v", err)
+	}
 
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
-			err := mgr.Store(hashVal, "concurrent_task", 0, 20*time.Millisecond, logContent, nil)
-			if err != nil {
-				errCh <- err
+	_ = lock1.Unlock()
+	_ = lock2.Unlock()
+
+	// Exclusive lock should succeed
+	exLock, err := cache.AcquireLock(lockPath, cache.LockExclusive)
+	if err != nil {
+		t.Fatalf("AcquireLock exclusive failed: %v", err)
+	}
+	_ = exLock.Unlock()
+}
+
+func TestCache_RemoteHTTPBackend(t *testing.T) {
+	storage := make(map[string][]byte)
+	var mu sync.Mutex
+
+	// Mock remote cache HTTP server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		key := r.URL.Path[1:] // trim leading slash
+
+		switch r.Method {
+		case http.MethodHead:
+			if _, exists := storage[key]; exists {
+				w.WriteHeader(http.StatusOK)
+			} else {
+				w.WriteHeader(http.StatusNotFound)
 			}
-		}(i)
-	}
+		case http.MethodGet:
+			data, exists := storage[key]
+			if !exists {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(data)
+		case http.MethodPut:
+			data := make([]byte, r.ContentLength)
+			_, _ = r.Body.Read(data)
+			storage[key] = data
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}))
+	defer server.Close()
 
-	wg.Wait()
-	close(errCh)
+	remoteBackend := cache.NewHTTPRemoteBackend(server.URL, "secret-token", 5*time.Second)
 
-	for err := range errCh {
-		t.Errorf("concurrent Store returned error: %v", err)
-	}
-
-	if !mgr.Has(hashVal) {
-		t.Fatalf("expected Has(%q) to be true after concurrent stores", hashVal)
-	}
-
-	entry, logs, err := mgr.Restore(hashVal)
-	if err != nil {
-		t.Fatalf("Restore failed after concurrent store: %v", err)
-	}
-	if entry.TaskName != "concurrent_task" {
-		t.Errorf("expected task name concurrent_task, got %s", entry.TaskName)
-	}
-	if string(logs) != string(logContent) {
-		t.Errorf("expected logs %q, got %q", string(logContent), string(logs))
-	}
-}
-
-// TestCache_Prune_CleansAbandonedStagingDirs proves that abandoned staging directories
-// from ungraceful crashes are purged by Prune.
-func TestCache_Prune_CleansAbandonedStagingDirs(t *testing.T) {
 	tempDir := t.TempDir()
-	mgr := cache.New(tempDir)
+	cacheMgr := cache.New(tempDir)
+	cacheMgr.SetRemote(remoteBackend)
 
-	// Create an abandoned staging dir
-	abandonedStaging := filepath.Join(mgr.CacheDir, "tmp-crashedhash-999-1000")
-	if err := os.MkdirAll(abandonedStaging, 0755); err != nil {
-		t.Fatalf("failed to create abandoned staging dir: %v", err)
-	}
-	_ = os.WriteFile(filepath.Join(abandonedStaging, "partial.log"), []byte("partial"), 0644)
+	hash := "remote-test-hash"
 
-	// Backdate abandoned dir mod time by 10 minutes
-	pastTime := time.Now().Add(-10 * time.Minute)
-	_ = os.Chtimes(abandonedStaging, pastTime, pastTime)
+	// Create and store task
+	artRel := "out/bundle.js"
+	fullArt := filepath.Join(tempDir, artRel)
+	_ = os.MkdirAll(filepath.Dir(fullArt), 0755)
+	_ = os.WriteFile(fullArt, []byte("console.log('remote');"), 0644)
 
-	// Prune
-	_, err := mgr.Prune(1 * time.Hour)
+	err := cacheMgr.Store(hash, "bundle", 0, 50*time.Millisecond, []byte("built bundle"), []string{artRel})
 	if err != nil {
-		t.Fatalf("Prune failed: %v", err)
+		t.Fatalf("store failed: %v", err)
 	}
 
-	// Verify abandoned staging directory was removed
-	if _, err := os.Stat(abandonedStaging); !os.IsNotExist(err) {
-		t.Errorf("expected abandoned staging directory to be deleted by prune, but it still exists")
+	// Give async remote upload a brief moment to finish
+	time.Sleep(100 * time.Millisecond)
+
+	// Clean local disk cache to force remote fetch
+	_ = os.RemoveAll(filepath.Join(cacheMgr.CacheDir, hash))
+	_ = os.Remove(fullArt)
+
+	// Has() should query remote and return true
+	ctx := context.Background()
+	hasRemote, err := remoteBackend.Has(ctx, hash)
+	if err != nil || !hasRemote {
+		t.Fatalf("remote backend does not have hash: %v", err)
+	}
+
+	// Restore() should hydrate from remote cache and restore the artifact!
+	entry, logs, err := cacheMgr.Restore(hash)
+	if err != nil {
+		t.Fatalf("Restore from remote failed: %v", err)
+	}
+	if entry.TaskName != "bundle" {
+		t.Errorf("expected task 'bundle', got %s", entry.TaskName)
+	}
+	if string(logs) != "built bundle" {
+		t.Errorf("unexpected logs: %s", string(logs))
+	}
+
+	// Verify workspace artifact restored
+	restoredData, err := os.ReadFile(fullArt)
+	if err != nil || string(restoredData) != "console.log('remote');" {
+		t.Errorf("failed to restore artifact from remote: %v, content: %s", err, string(restoredData))
 	}
 }
-

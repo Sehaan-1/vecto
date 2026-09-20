@@ -46,21 +46,8 @@ func LoadConfig(dir string) (*Config, error) {
 		return nil, fmt.Errorf("parsing vecto.yaml: %w", err)
 	}
 
-	if len(cfg.Tasks) == 0 {
-		return nil, fmt.Errorf("vecto.yaml must define at least one task")
-	}
-
-	if cfg.Version != "1" {
-		return nil, fmt.Errorf("unsupported manifest version %q (expected \"1\")", cfg.Version)
-	}
-
-	// Validate dependencies exist
-	for taskName, task := range cfg.Tasks {
-		for _, dep := range task.Dependencies {
-			if _, exists := cfg.Tasks[dep]; !exists {
-				return nil, fmt.Errorf("task %q depends on non-existent task %q", taskName, dep)
-			}
-		}
+	if err := Validate(&cfg); err != nil {
+		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
 
 	return &cfg, nil

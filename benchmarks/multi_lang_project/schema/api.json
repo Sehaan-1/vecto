@@ -1,0 +1,9 @@
+{
+  "version": "1.0",
+  "title": "Multi-Language Test Service",
+  "endpoints": [
+    { "path": "/api/v1/health", "method": "GET" },
+    { "path": "/api/v1/math/add", "method": "POST" },
+    { "path": "/api/v1/data/process", "method": "POST" }
+  ]
+}

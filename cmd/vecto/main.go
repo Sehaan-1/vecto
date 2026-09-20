@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"runtime"
 	"sort"
@@ -14,6 +15,7 @@ import (
 	"github.com/Sehaan-1/vecto/internal/config"
 	"github.com/Sehaan-1/vecto/internal/dag"
 	"github.com/Sehaan-1/vecto/internal/hash"
+	"github.com/Sehaan-1/vecto/internal/logger"
 	"github.com/Sehaan-1/vecto/internal/runner"
 	"github.com/Sehaan-1/vecto/internal/ui"
 )
@@ -245,10 +247,15 @@ func handleRun(args []string) {
 	runFlags.BoolVar(verbose, "v", false, "Short for -verbose")
 	dryRun := runFlags.Bool("dry-run", false, "Preview execution plan and cache status without executing commands")
 	runFlags.BoolVar(dryRun, "d", false, "Short for -dry-run")
+	jsonOutput := runFlags.Bool("json", false, "Output execution summary in machine-readable JSON format for CI")
+	logLevel := runFlags.String("log-level", "info", "Log level: debug, info, warn, error")
+	logFormat := runFlags.String("log-format", "text", "Log format: text, json")
 
 	if err := runFlags.Parse(runnerArgs); err != nil {
 		os.Exit(1)
 	}
+
+	logger.Setup(os.Stderr, *logLevel, *logFormat)
 
 	targets := runFlags.Args()
 
@@ -276,7 +283,11 @@ func handleRun(args []string) {
 		return
 	}
 
-	reporter := ui.NewReporter(os.Stdout, isTerminal(os.Stdout))
+	var reporterWriter io.Writer = os.Stdout
+	if *jsonOutput {
+		reporterWriter = io.Discard
+	}
+	reporter := ui.NewReporter(reporterWriter, !*jsonOutput && isTerminal(os.Stdout))
 
 	r := runner.New(cfg, g, cacheMgr, reporter, cwd, runner.Options{
 		Concurrency:     *concurrency,
@@ -287,7 +298,18 @@ func handleRun(args []string) {
 	})
 
 	ctx := context.Background()
-	if err := r.Run(ctx, targets); err != nil {
+	startRun := time.Now()
+	runErr := r.Run(ctx, targets)
+	elapsed := time.Since(startRun)
+
+	if *jsonOutput {
+		jsonBytes, err := reporter.JSONSummary(elapsed)
+		if err == nil {
+			fmt.Println(string(jsonBytes))
+		}
+	}
+
+	if runErr != nil {
 		os.Exit(1)
 	}
 }
@@ -367,6 +389,9 @@ Flags for 'run':
   -f, --force                      Bypass cache and force rerun
   -v, --verbose                    Print command output for all tasks
   -d, --dry-run                    Preview execution plan and cache status without running commands
+  --json                           Output machine-readable execution summary in JSON format
+  --log-level <level>              Log level: debug, info, warn, error (default: info)
+  --log-format <format>            Log format: text, json (default: text)
   -h, --help                       Show help
 
 Flags for 'graph':

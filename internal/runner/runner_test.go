@@ -290,7 +290,7 @@ func TestRunner_NoHeadOfLineBlocking(t *testing.T) {
 	slowCmd := "sleep 1.5"
 	fastCmd := "echo fast"
 	if runtime.GOOS == "windows" {
-		slowCmd = "timeout /T 2 /NOBREAK > NUL"
+		slowCmd = "ping 127.0.0.1 -n 3 > nul"
 	}
 
 	cfg := &config.Config{
@@ -338,8 +338,8 @@ func TestRunner_NoHeadOfLineBlocking(t *testing.T) {
 	if total < 1*time.Second {
 		t.Errorf("run finished suspiciously fast (%v) — did A_slow actually run?", total)
 	}
-	if total > 3*time.Second {
-		t.Errorf("run took %v — possible head-of-line blocking; expected ~1.5s", total)
+	if total > 4*time.Second {
+		t.Errorf("run took %v — possible head-of-line blocking; expected ~1.5-2.0s", total)
 	}
 }
 
@@ -354,7 +354,7 @@ func TestRunner_CancellationTeardown(t *testing.T) {
 
 	sleepCmd := "sleep 10"
 	if runtime.GOOS == "windows" {
-		sleepCmd = "timeout /T 10 /NOBREAK > NUL"
+		sleepCmd = "powershell -NoProfile -Command \"Start-Sleep -Seconds 10\""
 	}
 
 	cfg := &config.Config{

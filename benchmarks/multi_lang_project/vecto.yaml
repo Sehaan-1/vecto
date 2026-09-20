@@ -1,0 +1,38 @@
+version: "1"
+
+tasks:
+  codegen:
+    command: "python scripts/generate_routes.py"
+    inputs: ["schema/api.json", "scripts/generate_routes.py"]
+    outputs: ["generated/routes.txt"]
+
+  test-go:
+    command: "go test ./services/api/..."
+    deps: ["codegen"]
+    inputs: ["services/api/**/*.go", "generated/routes.txt"]
+
+  test-py:
+    command: "python scripts/test_processor.py"
+    inputs: ["scripts/**/*.py"]
+
+  test-web:
+    command: "node web/index.test.js"
+    inputs: ["web/**/*.js"]
+
+  build-go:
+    command: "go run services/api/main.go build"
+    deps: ["test-go"]
+    inputs: ["services/api/**/*.go"]
+    outputs: ["dist/api_service.bin"]
+
+  build-web:
+    command: "python scripts/build_bundle.py"
+    deps: ["test-web"]
+    inputs: ["web/**/*.js", "scripts/build_bundle.py"]
+    outputs: ["dist/bundle.js"]
+
+  package:
+    command: "python scripts/package_release.py"
+    deps: ["build-go", "build-web", "test-py"]
+    inputs: ["dist/api_service.bin", "dist/bundle.js", "scripts/package_release.py"]
+    outputs: ["dist/release.manifest"]
