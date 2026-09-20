@@ -19,10 +19,11 @@ import (
 
 // Options configures the runner execution behavior.
 type Options struct {
-	Concurrency int
-	KeepGoing   bool
-	Force       bool
-	Verbose     bool
+	Concurrency     int
+	KeepGoing       bool
+	Force           bool
+	Verbose         bool
+	PassthroughArgs []string
 }
 
 // Runner coordinates concurrent task scheduling and execution.
@@ -70,6 +71,10 @@ func (r *Runner) Run(ctx context.Context, targetTasks []string) error {
 
 	// Precompute needed tasks using graph ancestor closure
 	needed := r.Graph.NeededTasks(targetTasks)
+	targetSet := make(map[string]bool, len(targetTasks))
+	for _, t := range targetTasks {
+		targetSet[t] = true
+	}
 
 	// Register only needed tasks with reporter so summary counts are accurate
 	neededSlice := make([]string, 0, len(needed))
@@ -152,7 +157,7 @@ func (r *Runner) Run(ctx context.Context, targetTasks []string) error {
 			} else {
 				// Acquire concurrency slot only for tasks that will actually run.
 				sem <- struct{}{}
-				r.runTask(runCtx, cancel, n, &mu, failedTasks, unmetTasks, taskFingerprints)
+				r.runTask(runCtx, cancel, n, targetSet, &mu, failedTasks, unmetTasks, taskFingerprints)
 				<-sem
 			}
 
@@ -188,12 +193,18 @@ func (r *Runner) runTask(
 	runCtx context.Context,
 	cancel context.CancelFunc,
 	name string,
+	targetSet map[string]bool,
 	mu *sync.Mutex,
 	failedTasks map[string]error,
 	unmetTasks map[string]bool,
 	taskFingerprints map[string]string,
 ) {
 	taskCfg := r.Config.Tasks[name]
+
+	cmdToRun := taskCfg.Command
+	if len(r.Opts.PassthroughArgs) > 0 && (len(targetSet) == 0 || targetSet[name]) {
+		cmdToRun = cmdToRun + " " + strings.Join(r.Opts.PassthroughArgs, " ")
+	}
 
 	// Collect transitive dependency fingerprints for cache key computation
 	mu.Lock()
@@ -206,7 +217,7 @@ func (r *Runner) runTask(
 	mu.Unlock()
 
 	// Compute content-addressable fingerprint
-	fingerprint, err := hash.ComputeTaskFingerprint(r.BaseDir, taskCfg.Command, taskCfg.Inputs, taskCfg.Env, depFingerprints)
+	fingerprint, err := hash.ComputeTaskFingerprint(r.BaseDir, cmdToRun, taskCfg.Inputs, taskCfg.Env, depFingerprints)
 	if err != nil {
 		mu.Lock()
 		failedTasks[name] = err
@@ -239,7 +250,7 @@ func (r *Runner) runTask(
 	r.Reporter.TaskStarted(name)
 	taskStart := time.Now()
 
-	output, execErr := r.executeCommand(runCtx, taskCfg.Command)
+	output, execErr := r.executeCommand(runCtx, cmdToRun)
 	duration := time.Since(taskStart)
 
 	if execErr != nil {
@@ -267,7 +278,7 @@ func (r *Runner) runTask(
 
 // executeCommand runs cmdStr in a subprocess with process-group isolation.
 // setProcAttrs (platform-specific) places the child in its own process group
-// so that killProcessGroup terminates all descendants, not just the shell.
+// so that terminateProcessGroup can cleanly signal or terminate all descendants.
 func (r *Runner) executeCommand(ctx context.Context, cmdStr string) ([]byte, error) {
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
@@ -287,13 +298,15 @@ func (r *Runner) executeCommand(ctx context.Context, cmdStr string) ([]byte, err
 		return nil, err
 	}
 
-	// Kill the entire process group when context is cancelled.
-	// This prevents orphaned zombie processes when a sibling task fails.
+	// Two-phase graceful teardown when context is cancelled:
+	// 1. Sends SIGTERM to entire process group (-pgid) allowing child processes
+	//    to flush disk buffers and release socket handles.
+	// 2. Waits up to 1 second grace period, then escalates to SIGKILL if still alive.
 	watchDone := make(chan struct{})
 	go func() {
 		select {
 		case <-ctx.Done():
-			killProcessGroup(cmd)
+			terminateProcessGroup(cmd, 1*time.Second, watchDone)
 		case <-watchDone:
 		}
 	}()

@@ -1,57 +1,81 @@
-# ADR-0007: Process Group Isolation for Subprocess Cleanup
+# ADR-0007: Process Group Isolation and Two-Phase Teardown
 
-**Status:** Accepted  
-**Date:** 2026-09-20
+**Status:** Accepted (Updated)  
+**Date:** 2026-09-20  
+**Author:** Vecto Engine Team
 
 ## Context
 
 Task commands are executed via `exec.Command("sh", "-c", cmdStr)` (Unix) or `cmd.exe /C` (Windows). When a sibling task fails and the run context is cancelled, Go's default behaviour sends `SIGKILL` **only to the top-level shell process** (`/bin/sh` or `cmd.exe`). Any child processes that the shell spawned — compilers, test runners, language servers, bundlers — are reparented to PID 1 (init) and continue consuming CPU, memory, and port locks as orphaned zombies.
 
-This is a well-known problem in build systems and CI runners (see: Bazel's process-wrapper, Turborepo's cross-platform kill, GitHub Actions' `cancel-in-progress`).
+Furthermore, immediately firing `SIGKILL` prevents child processes from trapping termination signals, flushing unwritten disk buffers, closing SQLite handles, or releasing network sockets, leaving corrupted state behind.
 
 ## Decision
 
-Use **OS process groups** to ensure the full subprocess tree is terminated:
+Use **OS process groups** combined with a **Two-Phase Signal Escalation Ladder**:
 
 ### Unix (`//go:build !windows` — `internal/runner/proc_unix.go`)
 ```go
 cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-// On cancellation:
-syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+
+// Phase 1: Polite termination broadcast to process group (-pgid)
+_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+
+// Phase 2: Escalation timer (grace period: 1s)
+go func() {
+    select {
+    case <-time.After(gracePeriod):
+        // Force kill if child failed to terminate
+        _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+    case <-done:
+        // Child exited cleanly within grace period
+    }
+}()
 ```
-`Setpgid: true` places the child shell in a new process group (PGID = child PID). Signalling the **negative PGID** delivers the signal to every process in the group.
+`Setpgid: true` places the child shell in a new process group (PGID = child PID). Signalling the **negative PGID** delivers `SIGTERM` to every process in the group. If the process tree does not exit before `gracePeriod` expires, `SIGKILL` is delivered to guarantee termination.
 
 ### Windows (`//go:build windows` — `internal/runner/proc_windows.go`)
 ```go
 cmd.SysProcAttr = &syscall.SysProcAttr{
     CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP,
 }
-// On cancellation:
-cmd.Process.Kill()
-```
-On Windows, `cmd.exe /C` already runs inside a job object when invoked via Go's `exec.Command`. `CREATE_NEW_PROCESS_GROUP` isolates the group; `Process.Kill()` terminates it.
 
-### Cancellation watcher goroutine
-`executeCommand` uses `cmd.Start()` + `cmd.Wait()` (not `exec.CommandContext`) so it can control the kill signal precisely:
+// Phase 1: Attempt polite console break event
+_ = syscall.GenerateConsoleCtrlEvent(syscall.CTRL_BREAK_EVENT, uint32(cmd.Process.Pid))
+
+// Phase 2: Escalation timer followed by Process.Kill()
+go func() {
+    select {
+    case <-time.After(gracePeriod):
+        if cmd.Process != nil {
+            _ = cmd.Process.Kill()
+        }
+    case <-done:
+    }
+}()
+```
+
+### Cancellation watcher goroutine in `executeCommand`
 ```go
+watchDone := make(chan struct{})
 go func() {
     select {
     case <-ctx.Done():
-        killProcessGroup(cmd)
+        terminateProcessGroup(cmd, 1*time.Second, watchDone)
     case <-watchDone:
     }
 }()
+
+err := cmd.Wait()
+close(watchDone)
 ```
 
 ## Consequences
 
 **Positive:**
 - Build tasks that spawn compilers or test runners no longer leave zombie processes after pipeline cancellation.
-- Port conflicts and file lock contention from orphaned processes are eliminated.
+- Two-phase teardown allows compilers and test suites to trap `SIGTERM`, flush disk buffers, and cleanly release file/port locks before hard termination.
+- Unresponsive or hanging processes are guaranteed to be terminated when the grace timer expires.
 
 **Neutral:**
-- The `watchDone` goroutine is always spawned, even for tasks that complete normally. It exits immediately via the `<-watchDone` case at zero cost.
-
-**Negative / Trade-offs:**
-- `SIGKILL` is abrupt — no cleanup for the child. For tasks that need graceful shutdown (e.g., a dev server), a two-phase `SIGTERM → SIGKILL` with a timeout would be preferable. This is deferred as a future enhancement.
-- Windows behaviour differs: `cmd.exe /C` job propagation is less deterministic than Unix PGID signalling for deeply nested child trees.
+- In fast cancellations where child processes exit immediately upon `SIGTERM`, `watchDone` closes quickly and the escalation timer goroutine exits without allocating.

@@ -342,3 +342,94 @@ func TestRunner_NoHeadOfLineBlocking(t *testing.T) {
 		t.Errorf("run took %v — possible head-of-line blocking; expected ~1.5s", total)
 	}
 }
+
+// TestRunner_CancellationTeardown verifies that cancelling the run context terminates
+// in-flight processes promptly via the process group escalation ladder (ADR-0007).
+func TestRunner_CancellationTeardown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping timing-sensitive test in short mode")
+	}
+
+	tempDir := t.TempDir()
+
+	sleepCmd := "sleep 10"
+	if runtime.GOOS == "windows" {
+		sleepCmd = "timeout /T 10 /NOBREAK > NUL"
+	}
+
+	cfg := &config.Config{
+		Version: "1",
+		Tasks: map[string]config.TaskConfig{
+			"long_task": {Command: sleepCmd},
+		},
+	}
+
+	g := dag.New()
+	for name, task := range cfg.Tasks {
+		g.AddTask(name, task.Dependencies)
+	}
+
+	cacheMgr := cache.New(tempDir)
+	buf := &bytes.Buffer{}
+	reporter := ui.NewReporter(buf, false)
+	r := runner.New(cfg, g, cacheMgr, reporter, tempDir, runner.Options{Concurrency: 2})
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Cancel context after 200ms
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	err := r.Run(ctx, nil)
+	duration := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error on cancelled context, got nil")
+	}
+
+	// Must terminate promptly (well under 5s, way before the 10s sleep finishes)
+	if duration > 4*time.Second {
+		t.Errorf("teardown took too long: %v (expected < 4s)", duration)
+	}
+}
+
+func TestRunner_PassthroughArgs(t *testing.T) {
+	tempDir := t.TempDir()
+
+	cfg := &config.Config{
+		Version: "1",
+		Tasks: map[string]config.TaskConfig{
+			"echo_task": {
+				Command: "echo hello",
+			},
+		},
+	}
+
+	g := dag.New()
+	for name, task := range cfg.Tasks {
+		g.AddTask(name, task.Dependencies)
+	}
+
+	cacheMgr := cache.New(tempDir)
+	buf := &bytes.Buffer{}
+	reporter := ui.NewReporter(buf, false)
+	r := runner.New(cfg, g, cacheMgr, reporter, tempDir, runner.Options{
+		Concurrency:     1,
+		Verbose:         true,
+		PassthroughArgs: []string{"world", "123"},
+	})
+
+	err := r.Run(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "hello world 123") {
+		t.Errorf("expected passthrough args 'hello world 123' in output, got:\n%s", out)
+	}
+}
+
