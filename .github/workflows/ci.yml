@@ -43,10 +43,12 @@ jobs:
           check-latest: true
 
       - name: Run tests with race detector and coverage
+        shell: bash
         run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
 
       - name: Report coverage
         if: always()
+        shell: bash
         run: go tool cover -func=coverage.out | tail -n 20
 
       - name: Run benchmarks

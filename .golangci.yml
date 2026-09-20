@@ -1,4 +1,3 @@
-version: v1.64.8
 run:
   timeout: 5m
 linters:
