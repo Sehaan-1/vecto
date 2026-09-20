@@ -172,8 +172,7 @@ func TestCache_FileLocking(t *testing.T) {
 	_ = exLock.Unlock()
 }
 
-func TestCache_RemoteHTTPBackend(t *testing.T) {
-	storage := make(map[string][]byte)
+func TestCache_RemoteHTTPBackend(t *testing.T) {	storage := make(map[string][]byte)
 	var mu sync.Mutex
 
 	// Mock remote cache HTTP server
@@ -259,5 +258,104 @@ func TestCache_RemoteHTTPBackend(t *testing.T) {
 	restoredData, err := os.ReadFile(fullArt)
 	if err != nil || string(restoredData) != "console.log('remote');" {
 		t.Errorf("failed to restore artifact from remote: %v, content: %s", err, string(restoredData))
+	}
+}
+
+// captureRemote records the artifact map handed to Put so tests can prove
+// large outputs never enter the in-memory upload path (ADR-0012).
+type captureRemote struct {
+	mu        sync.Mutex
+	got       map[string][]byte
+	putCalled chan struct{}
+}
+
+func (c *captureRemote) Has(ctx context.Context, hash string) (bool, error) {
+	return false, nil
+}
+
+func (c *captureRemote) Get(ctx context.Context, hash string) (*cache.Entry, []byte, map[string][]byte, error) {
+	return nil, nil, nil, cache.ErrRemoteNotFound
+}
+
+func (c *captureRemote) Put(ctx context.Context, hash string, entry *cache.Entry, logBytes []byte, artifacts map[string][]byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.got = artifacts
+	select {
+	case <-c.putCalled:
+	default:
+		close(c.putCalled)
+	}
+	return nil
+}
+
+func TestCache_LargeArtifactSkippedFromMemory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping 100MB artifact test in short mode")
+	}
+	tempDir := t.TempDir()
+	cacheMgr := cache.New(tempDir)
+
+	remote := &captureRemote{putCalled: make(chan struct{})}
+	cacheMgr.SetRemote(remote)
+
+	// 100MB output, written in 1MB chunks so the test itself never holds it.
+	const size = 100 << 20
+	artRel := "out/big.bin"
+	fullArt := filepath.Join(tempDir, artRel)
+	if err := os.MkdirAll(filepath.Dir(fullArt), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	f, err := os.Create(fullArt)
+	if err != nil {
+		t.Fatalf("create big artifact: %v", err)
+	}
+	chunk := make([]byte, 1<<20)
+	for written := int64(0); written < size; {
+		n, err := f.Write(chunk)
+		if err != nil {
+			t.Fatalf("write big artifact: %v", err)
+		}
+		written += int64(n)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close big artifact: %v", err)
+	}
+
+	hash := "large-artifact-test-hash"
+	if err := cacheMgr.Store(hash, "bundle", 0, time.Second, []byte("built big"), []string{artRel}); err != nil {
+		t.Fatalf("Store() failed: %v", err)
+	}
+
+	// Wait for the async remote upload.
+	select {
+	case <-remote.putCalled:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("timed out waiting for async remote Put")
+	}
+
+	// The 100MB file must NOT be in the in-memory upload map.
+	remote.mu.Lock()
+	_, present := remote.got[artRel]
+	remote.mu.Unlock()
+	if present {
+		t.Fatalf("artifact %q over %d bytes was buffered for remote upload", artRel, cache.MaxRemoteArtifactBytes)
+	}
+
+	// Local disk cache must still hold it, verified by restore.
+	_ = os.Remove(fullArt)
+	entry, _, err := cacheMgr.Restore(hash)
+	if err != nil {
+		t.Fatalf("Restore() failed: %v", err)
+	}
+	if len(entry.Artifacts) != 1 || entry.Artifacts[0] != artRel {
+		t.Fatalf("expected artifact %q in entry, got %v", artRel, entry.Artifacts)
+	}
+	info, err := os.Stat(fullArt)
+	if err != nil {
+		t.Fatalf("restored artifact missing: %v", err)
+	}
+	if info.Size() != size {
+		t.Fatalf("expected restored size %d, got %d", size, info.Size())
 	}
 }

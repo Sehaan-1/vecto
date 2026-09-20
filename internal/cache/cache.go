@@ -17,6 +17,13 @@ import (
 
 const CurrentSchemaVersion = 1
 
+// MaxRemoteArtifactBytes caps how much artifact data is kept in memory for
+// async remote upload (ADR-0012). Files larger than this are still stored in
+// the local disk cache with full hash verification, but excluded from the
+// in-memory upload map: the remote bundle encodes bytes as base64 JSON
+// (+33%), so buffering a 100MB output would spike ~133MB+ per file.
+const MaxRemoteArtifactBytes = 50 << 20
+
 var (
 	ErrCacheCorrupted     = errors.New("cache entry corrupted: integrity check failed")
 	ErrIncompatibleSchema = errors.New("cache schema version mismatch")
@@ -146,7 +153,9 @@ func (m *Manager) Store(hash, taskName string, exitCode int, duration time.Durat
 	logSum := sha256.Sum256(output)
 	logSHA256 := hex.EncodeToString(logSum[:])
 
-	// 3. Copy artifacts to staging and compute checksums
+	// 3. Copy artifacts to staging and compute checksums.
+	// Only artifacts within MaxRemoteArtifactBytes are buffered for remote
+	// upload; larger files stay disk-only (local restore unaffected).
 	artifactsDir := filepath.Join(stagingDir, "artifacts")
 	var savedArtifacts []string
 	var artifactMetas []ArtifactRecord
@@ -168,7 +177,9 @@ func (m *Manager) Store(hash, taskName string, exitCode int, duration time.Durat
 					SHA256: hashHex,
 					Size:   info.Size(),
 				})
-				artifactBytesMap[relPath] = fileBytes
+				if fileBytes != nil {
+					artifactBytesMap[relPath] = fileBytes
+				}
 			}
 		}
 	}
@@ -210,7 +221,9 @@ func (m *Manager) Store(hash, taskName string, exitCode int, duration time.Durat
 
 	committed = true
 
-	// 6. Asynchronously upload to remote cache if enabled
+	// 6. Asynchronously upload to remote cache if enabled.
+	// The upload map only holds artifacts within MaxRemoteArtifactBytes;
+	// larger outputs stay local-only until a streaming-upload ADR lands.
 	if m.Remote != nil {
 		go func(e Entry, log []byte, artMap map[string][]byte) {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -423,6 +436,16 @@ func copyAndHashFile(src, dst string) ([]byte, string, error) {
 	defer out.Close()
 
 	hasher := sha256.New()
+	// Files over the remote-upload cap stream straight to disk: no full-file
+	// buffer, nil bytes signals "disk-only" to the caller (ADR-0012).
+	if info.Size() > MaxRemoteArtifactBytes {
+		mw := io.MultiWriter(out, hasher)
+		if _, err := io.Copy(mw, in); err != nil {
+			return nil, "", err
+		}
+		return nil, hex.EncodeToString(hasher.Sum(nil)), os.Chmod(dst, info.Mode())
+	}
+
 	var buf bytes.Buffer
 	mw := io.MultiWriter(out, hasher, &buf)
 
