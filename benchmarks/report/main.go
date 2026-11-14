@@ -142,13 +142,13 @@ func goBinary() string {
 func runSuite(pkg, pattern, jsonlPath string) (map[string]string, error) {
 	cmd := exec.Command("go", "test", "-json", "-count=1", "-run", pattern, pkg)
 	cmd.Env = append(os.Environ(), "VECTO_BENCH_OUT="+jsonlPath)
-	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("go test %s %s: %w\n%s", pkg, pattern, err, buf.String())
+		return nil, fmt.Errorf("go test %s %s: %w\n%s", pkg, pattern, err, stderr.String())
 	}
-	return parseEvents(&buf)
+	return parseEvents(&stdout)
 }
 
 func main() {
@@ -191,24 +191,38 @@ func main() {
 			fmt.Fprintf(os.Stderr, "report: %v\n", err)
 			os.Exit(1)
 		}
+		var res []Result
 		f, err := os.Open(jsonlPath)
-		if err != nil {
+		switch {
+		case err == nil:
+			res, err = readResults(f)
+			f.Close()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "report: reading %s: %v\n", jsonlPath, err)
+				os.Exit(1)
+			}
+		case os.IsNotExist(err):
+			// A suite whose tests all skipped wrote no JSONL records; keep the
+			// skip statuses from the event stream instead of failing to open.
+			res = nil
+		default:
 			fmt.Fprintf(os.Stderr, "report: opening %s: %v\n", jsonlPath, err)
 			os.Exit(1)
 		}
-		res, err := readResults(f)
-		f.Close()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "report: reading %s: %v\n", jsonlPath, err)
-			os.Exit(1)
-		}
+		known := make(map[string]bool, len(res))
 		for _, r := range res {
+			known[r.Test] = true
 			if st, ok := statuses[r.Test]; ok {
 				r.Status = st
 			}
 			results = append(results, r)
 			if r.Status == "fail" {
 				failed = true
+			}
+		}
+		for name, st := range statuses {
+			if st == "skip" && !known[name] {
+				results = append(results, Result{Suite: s.suite, Test: name, Status: "skip", Metrics: nil})
 			}
 		}
 	}
