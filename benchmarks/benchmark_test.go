@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Sehaan-1/vecto/benchmarks/benchutil"
 	"github.com/Sehaan-1/vecto/internal/cache"
 	"github.com/Sehaan-1/vecto/internal/config"
 	"github.com/Sehaan-1/vecto/internal/dag"
@@ -203,6 +204,17 @@ func TestBenchmark_MultiLang_Comparison(t *testing.T) {
 	_ = os.RemoveAll(filepath.Join(benchDir, "generated"))
 	vectoParallelTime, _, _ := runVecto(true, runtime.NumCPU())
 
+	benchutil.Record(t, "multi_lang", map[string]any{
+		"vecto_cold_ms":     float64(vectoCleanTime.Microseconds()) / 1000.0,
+		"vecto_hot_ms":      float64(vectoHotTime.Microseconds()) / 1000.0,
+		"vecto_incr_ms":     float64(vectoIncrTime.Microseconds()) / 1000.0,
+		"vecto_parallel_ms": float64(vectoParallelTime.Microseconds()) / 1000.0,
+		"make_clean_ms":     float64(makeCleanTotal.Microseconds()) / 1000.0,
+		"make_incr_ms":      float64(makeIncrTime.Microseconds()) / 1000.0,
+		"make_hot_ms":       float64(makeHotTime.Microseconds()) / 1000.0,
+		"make_parallel_ms":  float64(makeParallelTime.Microseconds()) / 1000.0,
+	})
+
 	fmt.Printf("| Scenario | Make Wall-Clock | Vecto Wall-Clock | Vecto Speedup / Savings |\n")
 	fmt.Printf("|---|---|---|---|\n")
 	fmt.Printf("| **Clean Cold Build** | %v | %v | %.2fx |\n", makeCleanTotal, vectoCleanTime, float64(makeCleanTotal)/float64(vectoCleanTime))
@@ -249,6 +261,14 @@ func TestBenchmark_CacheHit_LatencyDistribution(t *testing.T) {
 	p99 := latencies[iterations*99/100]
 	maxLat := latencies[iterations-1]
 
+	benchutil.Record(t, "cache_hit", map[string]any{
+		"vecto_min_ms": float64(minLat.Microseconds()) / 1000.0,
+		"vecto_p50_ms": float64(p50.Microseconds()) / 1000.0,
+		"vecto_p95_ms": float64(p95.Microseconds()) / 1000.0,
+		"vecto_p99_ms": float64(p99.Microseconds()) / 1000.0,
+		"vecto_max_ms": float64(maxLat.Microseconds()) / 1000.0,
+	})
+
 	fmt.Printf("--- Cache Hit Latency Distribution (100 runs on 7 tasks) ---\n")
 	fmt.Printf("Min: %v | Median (p50): %v | p95: %v | p99: %v | Max: %v\n\n", minLat, p50, p95, p99, maxLat)
 }
@@ -287,6 +307,13 @@ func TestBenchmark_Scalability_100_1000_10000(t *testing.T) {
 		if err != nil {
 			t.Fatalf("scale %d layers failed: %v", n, err)
 		}
+
+		benchutil.Record(t, "scalability", map[string]any{
+			"tasks":      n,
+			"topo_ms":    float64(topoElapsed.Microseconds()) / 1000.0,
+			"layers_ms":  float64(layersElapsed.Microseconds()) / 1000.0,
+			"layers":     len(layers),
+		})
 
 		fmt.Printf("Tasks: %-6d | TopoSort: %-10v | Layer Partitioning: %-10v | Layers: %d (Order verified: %d tasks)\n",
 			n, topoElapsed, layersElapsed, len(layers), len(topoOrder))
@@ -337,6 +364,11 @@ func TestBenchmark_FailureTeardown(t *testing.T) {
 	fmt.Printf("--- Failure & Cancellation Teardown Latency ---\n")
 	fmt.Printf("Fail-Fast Cancellation (Teardown latency): %v (Clean abort of 3 slow sibling tasks)\n", fastDuration)
 	fmt.Printf("Keep-Going Execution:                      %v (Independent tasks ran to completion)\n\n", keepDuration)
+
+	benchutil.Record(t, "teardown", map[string]any{
+		"fail_fast_ms":  float64(fastDuration.Microseconds()) / 1000.0,
+		"keep_going_ms": float64(keepDuration.Microseconds()) / 1000.0,
+	})
 
 	if fastDuration > 4*time.Second {
 		t.Errorf("Fail-fast teardown took suspiciously long: %v", fastDuration)
@@ -436,6 +468,13 @@ func TestBenchmark_ExternalRunners(t *testing.T) {
 	justRerun, _ := runExternal(t, justDir, "just", "package")
 	fmt.Printf("Just cold:       %v\n", justCold)
 	fmt.Printf("Just rerun:      %v (no cache, re-executes)\n\n", justRerun)
+
+	benchutil.Record(t, "external", map[string]any{
+		"turbo_cold_ms":  float64(turboCold.Microseconds()) / 1000.0,
+		"turbo_hot_ms":   float64(turboHot.Microseconds()) / 1000.0,
+		"just_cold_ms":   float64(justCold.Microseconds()) / 1000.0,
+		"just_rerun_ms":  float64(justRerun.Microseconds()) / 1000.0,
+	})
 
 	manifest := filepath.Join(justDir, "dist", "release.manifest")
 	if _, err := os.Stat(manifest); err != nil {

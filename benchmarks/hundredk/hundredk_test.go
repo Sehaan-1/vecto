@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Sehaan-1/vecto/benchmarks/benchutil"
 	"github.com/Sehaan-1/vecto/internal/cache"
 	"github.com/Sehaan-1/vecto/internal/config"
 	"github.com/Sehaan-1/vecto/internal/runner"
@@ -236,6 +237,12 @@ func TestBenchmark_HundredK(t *testing.T) {
 	}
 	durs = runVectoScenario(t, dir, true, 1)
 	vfiChange := durs[0]
+
+	benchutil.Record(t, "hundredk", map[string]any{
+		"vecto_legacy_ms":     float64(legacy.Microseconds()) / 1000.0,
+		"vecto_vfi_ms":        float64(vfi.Microseconds()) / 1000.0,
+		"vecto_vfi_change_ms": float64(vfiChange.Microseconds()) / 1000.0,
+	})
 
 	var rows []row
 	rows = append(rows,
