@@ -1,0 +1,2 @@
+{"suite":"cache_hit","test":"TestBenchmark_CacheHit_LatencyDistribution","metrics":{"vecto_min_ms":25.768}}
+{"suite":"multi_lang","test":"TestBenchmark_MultiLang_Comparison","metrics":{"vecto_cold_ms":120.5}}
