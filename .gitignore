@@ -21,4 +21,10 @@ benchmarks/multi_lang_project/.turbo/
 .cuecards/
 docs/cuecards/
 docs/lanes/
+docs/handoffs/
+docs/superpowers/
 *.log
+
+# Generated benchmark and demo build artifacts
+bench-results/
+brag-output-*/
