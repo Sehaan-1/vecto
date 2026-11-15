@@ -7,7 +7,7 @@ import (
 	"runtime"
 )
 
-const Version = "0.1.0"
+const Version = "0.2.0"
 
 // main is a thin starter: all logic lives in run() so tests can call it.
 func main() {
