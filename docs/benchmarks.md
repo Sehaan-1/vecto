@@ -91,6 +91,20 @@ go test -v ./benchmarks -run 'TestBenchmark_(Scalability|FailureTeardown)'
 go test -run='^$' -bench=. -benchmem ./...
 ```
 
+### CI reproduction
+
+The `Bench` workflow (`.github/workflows/bench.yml`) runs the same report command
+on `ubuntu-latest`, either manually or on the Monday 06:00 UTC schedule:
+
+```bash
+go run ./benchmarks/report -out bench-results -external -label "ubuntu-latest CI"
+```
+
+Turbo and Just are installed in that job, so the external-runner rows are measured
+rather than `skipped`. The rendered Markdown is appended to the run's job summary,
+and the `bench-results` artifact (JSON plus Markdown, retained 30 days) is the
+published proof behind the tables in this document.
+
 ---
 
 ## 6. Same-Machine Runner Comparison (Vecto vs Turbo vs Just vs Make)

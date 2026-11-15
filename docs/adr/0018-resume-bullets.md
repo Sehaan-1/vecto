@@ -22,3 +22,4 @@ What this means from now on:
 
 ## History
 - 2026-09-20 accepted
+- 2026-11-14: README no longer surfaces the two bullets; the claims and rerun commands remain in this ADR.

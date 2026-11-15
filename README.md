@@ -17,20 +17,34 @@ go install github.com/Sehaan-1/vecto/cmd/vecto@latest
 
 ```bash
 vecto init
-# writes vecto.yaml with one sample task
+# writes vecto.yaml with a sample lint → test → build graph
 
 vecto run build
+# [-] lint ... running
+# [✓] lint (1.80s)
+# [-] test ... running
+# [✓] test (1.58s)
 # [-] build ... running
-# [✓] build (0.41s)
-# Tasks: 1 total (0 cached, 1 executed)
+# [✓] build (1.77s)
+#
+# --- Summary ---
+# Tasks:    3 total (0 cached, 3 executed, 0 failed, 0 skipped)
+# Duration: 5.61s
 
 vecto run build
-# [CACHED] build (0.02s)
+# [⚡ CACHED] lint
+# [⚡ CACHED] test
+# [⚡ CACHED] build
+#
+# --- Summary ---
+# Tasks:    3 total (3 cached, 0 executed, 0 failed, 0 skipped)
+# Duration: 0.38s
 # second run restores from cache, no commands re-run
 
 vecto graph --format=mermaid  # or --json for CI
 ```
-> GIF: `vecto init && vecto run` in a real repo. Placeholder above is the exact terminal trace until the recording lands in `docs/assets/demo.gif`.
+
+![vecto demo](docs/assets/demo.gif)
 
 ## Architecture
 
@@ -72,7 +86,6 @@ vecto graph --format=mermaid  # or --json for CI
 
 * Event-driven scheduler, SHA-256 transitive hashing, atomic cache with cross-platform locks — see [ADR-0006](docs/adr/0006-reactive-event-driven-scheduler.md), [ADR-0004](docs/adr/0004-cryptographic-input-hashing.md), [ADR-0008](docs/adr/0008-atomic-cache-staging.md).
 * **Merkle File Index (VFI):** incremental input fingerprinting in O(changed files) — a persistent stat-cached Merkle forest under `.vecto/`, glob-coverage digests, git-racy-safe; on by default, `--no-file-index` for the legacy full-scan path — see [ADR-0019](docs/adr/0019-merkle-file-index-incremental-fingerprinting.md) and the 100k-file proof in [`docs/benchmarks.md`](docs/benchmarks.md) §7.
-* **Resume bullets:** "Built content-addressed DAG runner in Go: event-driven scheduler, SHA-256 transitive hashing, atomic cache with cross-platform locks" and "17ms hot replay (7 tasks), 2.8ms topo-sort on 10k nodes, 3-way CI" — numbers from [`docs/benchmarks.md`](docs/benchmarks.md).
 
 ---
 
@@ -94,6 +107,25 @@ vecto graph --format=mermaid  # or --json for CI
 | 100k-file warm fingerprinting | — | 0.59 s (VFI) vs 5.69 s legacy, 9.6× |
 
 Same-machine Turbo/Just rows and full method in [`docs/benchmarks.md`](docs/benchmarks.md). Hot vs Make flatters any cacher (Make has no cache); the honest cacher-vs-cacher table is in section 6 there.
+
+## Proof
+
+| Claim | Where to check |
+|---|---|
+| CI green on 3 OSes plus the minimum-Go job | [CI workflow](https://github.com/Sehaan-1/vecto/actions/workflows/ci.yml) |
+| Benchmarks with recorded environments | [Bench workflow](https://github.com/Sehaan-1/vecto/actions/workflows/bench.yml) — artifact `bench-results` |
+| Every number above, plus its method | [`docs/benchmarks.md`](docs/benchmarks.md) |
+| Design decisions and trade-offs | [ADR index](docs/adr/README.md) |
+
+Rerun the suite and regenerate the artifact on your own machine:
+
+```bash
+go run ./benchmarks/report -out bench-results
+```
+
+The benchmark table above is pinned to the author's machine, with the environment
+recorded in `docs/benchmarks.md`; the Bench workflow run is the live, reproducible
+artifact.
 
 ## Configuration
 
