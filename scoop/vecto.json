@@ -1,0 +1,31 @@
+{
+  "version": "0.2.0",
+  "description": "Language-agnostic DAG task runner and content-addressed build cache in Go",
+  "homepage": "https://github.com/Sehaan-1/vecto",
+  "license": "MIT",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/Sehaan-1/vecto/releases/download/v0.2.0/vecto_0.2.0_windows_amd64.zip",
+      "hash": "3240348bfe13bc8e2452b8152fe16d56f3095dc1b32b484a2c9c3a43106dc5d1"
+    },
+    "arm64": {
+      "url": "https://github.com/Sehaan-1/vecto/releases/download/v0.2.0/vecto_0.2.0_windows_arm64.zip",
+      "hash": "fea2243c8007495f27124f48b540bb19b092f78509f6c1a2de2aa774dcf7da5f"
+    }
+  },
+  "bin": "vecto.exe",
+  "checkver": "github",
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/Sehaan-1/vecto/releases/download/v$version/vecto_$version_windows_amd64.zip"
+      },
+      "arm64": {
+        "url": "https://github.com/Sehaan-1/vecto/releases/download/v$version/vecto_$version_windows_arm64.zip"
+      }
+    },
+    "hash": {
+      "url": "$baseurl/checksums.txt"
+    }
+  }
+}

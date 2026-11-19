@@ -3,15 +3,43 @@
 A language-agnostic DAG task runner and content-addressed build cache in Go.
 
 [![CI](https://github.com/Sehaan-1/vecto/actions/workflows/ci.yml/badge.svg)](https://github.com/Sehaan-1/vecto/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-github--pages-blue.svg)](https://sehaan-1.github.io/vecto/)
 [![Go Report Card](https://goreportcard.com/badge/github.com/Sehaan-1/vecto)](https://goreportcard.com/report/github.com/Sehaan-1/vecto)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ## Install
 
+### Quick Install (One-Liner)
+
+**Linux & macOS:**
 ```bash
-go install github.com/Sehaan-1/vecto/cmd/vecto@latest
-# or: download a tagged binary from Releases (built by GoReleaser)
+curl -fsSL https://raw.githubusercontent.com/Sehaan-1/vecto/master/install.sh | bash
 ```
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/Sehaan-1/vecto/master/install.ps1 | iex
+```
+
+### Package Managers & Docker
+
+* **Homebrew:**
+  ```bash
+  brew install Sehaan-1/vecto/vecto
+  ```
+* **Scoop (Windows):**
+  ```powershell
+  scoop install https://raw.githubusercontent.com/Sehaan-1/vecto/master/scoop/vecto.json
+  ```
+* **Docker:**
+  ```bash
+  docker run --rm -v "$(pwd):/workspace" -w /workspace ghcr.io/sehaan-1/vecto:latest run build
+  ```
+* **Go Install:**
+  ```bash
+  go install github.com/Sehaan-1/vecto/cmd/vecto@latest
+  ```
+* **Pre-built Binaries:** Download cross-platform archives directly from [GitHub Releases](https://github.com/Sehaan-1/vecto/releases/latest).
 
 ## 30 seconds
 
